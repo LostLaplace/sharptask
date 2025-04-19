@@ -1,0 +1,21 @@
+[package]
+name = "sharptask"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ignore = "0.4.23"
+grep = "0.3.2"
+clap = { version = "4.5.36", features = ["derive"] }
+taskchampion = "2.0.3"
+regex = "1.11.1"
+toml = "0.8.20"
+chrono = "0.4.40"
+chrono-tz = "0.10.3"
+serde = "1.0.219"
+colored = "3.0.0"
+anyhow = "1.0.98"
+localzone = "0.3.1"
+
+[dev-dependencies]
+testfile = "0.1.5"
