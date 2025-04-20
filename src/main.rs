@@ -6,6 +6,7 @@ use colored::Colorize;
 use anyhow::{Result, anyhow};
 
 mod config;
+mod taskparser;
 
 fn main() -> Result<()> {
     let cfg = config::get(); 
