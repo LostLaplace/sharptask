@@ -122,6 +122,22 @@ mod tests {
     }
 
     #[test]
+    fn test_task_desc_only_metadata() {
+        let mut task = String::from("📅 2025-05-19");
+        let metadata = parse_task_description(&mut task);
+        assert_eq!(metadata.unwrap(), "📅 2025-05-19");
+        assert_eq!(task, "");
+    }
+
+    #[test]
+    fn test_task_desc_emojis() {
+        let mut task = String::from("Make a  🥪 📅 2025-05-19");
+        let metadata = parse_task_description(&mut task);
+        assert_eq!(metadata.unwrap(), "📅 2025-05-19");
+        assert_eq!(task, "Make a  🥪");
+    }
+
+    #[test]
     fn test_parse_preamble() {
         let mut trivial_case = String::from("");
         let status = parse_preamble(&mut trivial_case);
