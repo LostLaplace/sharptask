@@ -20,22 +20,22 @@ pub enum Priority {
     Highest,
 }
 
-const SIGNIFICANT_EMOJI: &[&str] = &[
-    "📅",
-    "⏳",
-    "🛫",
-    "➕",
-    "✅",
-    "❌",
-    "🔺",
-    "⏫",
-    "🔼",
-    "🔽",
-    "⏬️",
-    "🔁",
-    "🆔",
-    "⛔",
-    "🔨",
+const SIGNIFICANT_EMOJI: &[&char] = &[
+    &'📅',
+    &'⏳',
+    &'🛫',
+    &'➕',
+    &'✅',
+    &'❌',
+    &'🔺',
+    &'⏫',
+    &'🔼',
+    &'🔽',
+    &'⏬',
+    &'🔁',
+    &'🆔',
+    &'⛔',
+    &'🔨',
 ];
 
 pub struct ObsidianTask {
@@ -58,27 +58,25 @@ pub fn parse<T: AsRef<str>>(task_string: T) -> Option<ObsidianTask> {
     let status = parse_preamble(&mut owned_task_string);
     let mut task_with_metadata = owned_task_string;
 
-    // Capture up to first significant emoji, this is our task description with tags
-    let mut emoji_offsets = Vec::new();
-    for emoji in SIGNIFICANT_EMOJI {
-        emoji_offsets.push(task_with_metadata.find(emoji));
-    }
-
-    let min_element = emoji_offsets.iter().min_by(|a, b| {
-        match (a, b) {
-            (Some(a_val), Some(b_val)) => a_val.cmp(b_val),
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, None) => std::cmp::Ordering::Equal,
-        }
-    }).cloned()?;
-
-    let (task_description, metadata) = match min_element {
-        Some(min) => task_with_metadata.split_at(min),
-        None => (task_with_metadata.as_str(), "")
-    };
 
     None
+}
+
+fn parse_task_description(task: &mut String) -> Option<String> {
+    // Capture up to first significant emoji, this is our task description with tags
+    let mut task_desc = String::with_capacity(task.len());
+    let mut metadata = None;
+    for sym in task.chars() {
+        if !SIGNIFICANT_EMOJI.contains(&&sym) {
+            task_desc.push(sym);
+        } else {
+            metadata = Some(task.replace(&task_desc, ""));
+            break;
+        }
+    }
+
+    *task = task_desc.trim().to_string();
+    metadata
 }
 
 fn parse_preamble(task_string: &mut String) -> Option<Status> {
@@ -98,7 +96,31 @@ fn parse_preamble(task_string: &mut String) -> Option<Status> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_task_desc_trivial() {
+        let mut trivial_case = String::from("");
+        let metadata = parse_task_description(&mut trivial_case);
+        assert!(metadata.is_none());
+        assert_eq!(trivial_case, "");
+    }
+
+    #[test]
+    fn test_task_desc_simple() {
+        let mut simple_task = String::from("This is some simple text");
+        let metadata = parse_task_description(&mut simple_task);
+        assert!(metadata.is_none());
+        assert_eq!(simple_task, "This is some simple text");
+    }
     
+    #[test]
+    fn test_task_desc_with_metadata() {
+        let mut task = String::from("Task data that is 📅 2025-05-19");
+        let metadata = parse_task_description(&mut task);
+        assert_eq!(metadata.unwrap(), "📅 2025-05-19");
+        assert_eq!(task, "Task data that is");
+    }
+
     #[test]
     fn test_parse_preamble() {
         let mut trivial_case = String::from("");
