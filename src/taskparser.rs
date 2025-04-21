@@ -113,6 +113,27 @@ impl Iterator for MetadataParser<'_> {
                     "⏳" => {
                         process_date!(self, ObsidianMetadata::Scheduled);
                     },
+                    "🛫" => {
+                        process_date!(self, ObsidianMetadata::Start);
+                    },
+                    "➕" => {
+                        process_date!(self, ObsidianMetadata::Created);
+                    },
+                    "✅" => {
+                        process_date!(self, ObsidianMetadata::Done);
+                    },
+                    "❌" => {
+                        process_date!(self, ObsidianMetadata::Canceled);
+                    },
+                    "🔺" => return Some(Ok(ObsidianMetadata::Priority(Priority::Highest))),
+                    "⏫" => return Some(Ok(ObsidianMetadata::Priority(Priority::High))),
+                    "🔼" => return Some(Ok(ObsidianMetadata::Priority(Priority::Medium))),
+                    "🔽" => return Some(Ok(ObsidianMetadata::Priority(Priority::Low))),
+                    "⏬️" => return Some(Ok(ObsidianMetadata::Priority(Priority::Lowest))),
+                    "🔨" => {
+                        let project: String = self.metadata.clone().take_while(|item| !SIGNIFICANT_EMOJI.contains(item)).collect();
+                        return Some(Ok(ObsidianMetadata::Project(project.trim().to_string())));
+                    },
                     &_ => continue
                 };
             }
@@ -267,10 +288,10 @@ mod tests {
     }
 
     #[test]
-    fn test_due_and_schedule() {
-        let mut task = String::from("Test task stuff 📅 2025-05-19 ⏳ 2025-05-19 [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|]]");
+    fn test_all_date_types() {
+        let mut task = String::from("Test task stuff 📅 2025-05-19 ⏳ 2025-05-19 🛫 2025-05-19 ➕ 2025-05-19 ✅ 2025-05-19 ❌ 2025-05-19 [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|]]");
         let (metadata, uuid) = extract_task_parts(&mut task);
-        assert_eq!(metadata.clone().unwrap(), "📅 2025-05-19 ⏳ 2025-05-19");
+        assert_eq!(metadata.clone().unwrap(), "📅 2025-05-19 ⏳ 2025-05-19 🛫 2025-05-19 ➕ 2025-05-19 ✅ 2025-05-19 ❌ 2025-05-19");
         assert_eq!(uuid.unwrap().unwrap(), Uuid::parse_str("96bb3816-aedd-4033-8ff6-4746a700aac8").unwrap());
         assert_eq!(task, "Test task stuff");
 
@@ -279,6 +300,52 @@ mod tests {
         let reference = chrono_tz::America::Chicago.with_ymd_and_hms(2025, 5, 19, 0, 0, 0).unwrap();
         assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Due(reference));
         assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Scheduled(reference));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Start(reference));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Created(reference));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Done(reference));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Canceled(reference));
+    }
+
+    #[test]
+    fn test_priority() {
+        let mut task = String::from("Test task stuff 🔺⏫🔼🔽⏬️ [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|]]");
+        let (metadata, uuid) = extract_task_parts(&mut task);
+        assert_eq!(metadata.clone().unwrap(), "🔺⏫🔼🔽⏬️");
+        assert_eq!(uuid.unwrap().unwrap(), Uuid::parse_str("96bb3816-aedd-4033-8ff6-4746a700aac8").unwrap());
+        assert_eq!(task, "Test task stuff");
+
+        let metadata_str = metadata.clone().unwrap();
+        let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::Highest));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::High));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::Medium));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::Low));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::Lowest));
+    }
+
+    #[test]
+    fn test_all() {
+        let mut task = String::from("Test task stuff 📅 2025-05-19 ⏳ 2025-05-19 🛫 2025-05-19 ➕ 2025-05-19 ✅ 2025-05-19 ❌ 2025-05-19 🔺⏫🔼🔽⏬️ 🔨 This is a project [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|]]");
+        let (metadata, uuid) = extract_task_parts(&mut task);
+        assert_eq!(metadata.clone().unwrap(), "📅 2025-05-19 ⏳ 2025-05-19 🛫 2025-05-19 ➕ 2025-05-19 ✅ 2025-05-19 ❌ 2025-05-19 🔺⏫🔼🔽⏬️ 🔨 This is a project");
+        assert_eq!(uuid.unwrap().unwrap(), Uuid::parse_str("96bb3816-aedd-4033-8ff6-4746a700aac8").unwrap());
+        assert_eq!(task, "Test task stuff");
+
+        let metadata_str = metadata.clone().unwrap();
+        let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
+        let reference = chrono_tz::America::Chicago.with_ymd_and_hms(2025, 5, 19, 0, 0, 0).unwrap();
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Due(reference));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Scheduled(reference));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Start(reference));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Created(reference));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Done(reference));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Canceled(reference));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::Highest));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::High));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::Medium));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::Low));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::Lowest));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Project("This is a project".to_string()));
     }
 
     #[test]
@@ -288,6 +355,19 @@ mod tests {
         let metadata_str = metadata.clone().unwrap();
         let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
         assert!(metadata_iter.next().unwrap().is_err());
+    }
+
+    #[test]
+    fn test_project() {
+        let mut task = String::from("Test task stuff 🔨 This is a test project [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|]]");
+        let (metadata, uuid) = extract_task_parts(&mut task);
+        assert_eq!(metadata.clone().unwrap(), "🔨 This is a test project");
+        assert_eq!(uuid.unwrap().unwrap(), Uuid::parse_str("96bb3816-aedd-4033-8ff6-4746a700aac8").unwrap());
+        assert_eq!(task, "Test task stuff");
+
+        let metadata_str = metadata.clone().unwrap();
+        let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Project("This is a test project".to_string()));
     }
 
     #[test]
