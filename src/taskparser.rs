@@ -1,9 +1,9 @@
 use taskchampion::Uuid;
-use chrono::DateTime;
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone};
 use chrono_tz::Tz;
 use regex::Regex;
 use std::{str::FromStr, string::String};
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::{Graphemes, UnicodeSegmentation};
 use anyhow::{Result, Context};
 
 #[derive(Debug, Eq, PartialEq)]
@@ -13,6 +13,7 @@ pub enum Status {
     Canceled,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum Priority {
     Lowest,
     Low,
@@ -53,6 +54,55 @@ pub struct ObsidianTask {
 	canceled: Option<DateTime<Tz>>,
 	priority: Priority,
 	project: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+enum ObsidianMetadata {
+    Due(DateTime<Tz>),
+    Scheduled(DateTime<Tz>),
+    Start(DateTime<Tz>),
+    Created(DateTime<Tz>),
+    Done(DateTime<Tz>),
+    Canceled(DateTime<Tz>),
+    Priority(Priority),
+    Project(String)
+}
+
+struct MetadataParser<'a>{
+    metadata: Graphemes<'a>,
+    timezone: Tz,
+}
+
+impl MetadataParser<'_> {
+    fn new(input: &'_ String, timezone: Tz) -> MetadataParser<'_> {
+        MetadataParser { metadata: input.graphemes(true), timezone }
+    }
+}
+
+impl Iterator for MetadataParser<'_> {
+    type Item = ObsidianMetadata;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Find next significant emoji 
+        loop {
+            if let Some(grapheme) = self.metadata.next() {
+                match grapheme {
+                    "📅" => {
+                        // Format for following data:
+                        // ' YYYY-MM-DD' = 11 symbols
+                        let mut date: String = self.metadata.clone().take(11).collect();
+                        date = date.trim().to_string();
+                        let nd = NaiveDate::parse_from_str(&date, "%Y-%m-%d");
+                        return nd.map(|dt| NaiveDateTime::from(dt))
+                            .map(|dt| dt.and_local_timezone(self.timezone))
+                            .ok()
+                            .map(|dt| ObsidianMetadata::Due(dt.unwrap()));
+                    },
+                    &_ => continue
+                }
+            }
+        }
+    }
 }
 
 pub fn parse<T: AsRef<str>>(task_string: T) -> Option<ObsidianTask> {
@@ -132,27 +182,42 @@ mod tests {
     fn test_task_desc_with_metadata() {
         let mut task = String::from("Task data that is 📅 2025-05-19");
         let (metadata, uuid) = extract_task_parts(&mut task);
-        assert_eq!(metadata.unwrap(), "📅 2025-05-19");
+        assert_eq!(metadata.clone().unwrap(), "📅 2025-05-19");
         assert!(uuid.is_none());
         assert_eq!(task, "Task data that is");
+
+        let metadata_str = metadata.clone().unwrap();
+        let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
+        let reference = chrono_tz::America::Chicago.with_ymd_and_hms(2025, 5, 19, 0, 0, 0).unwrap();
+        assert_eq!(metadata_iter.next().unwrap(), ObsidianMetadata::Due(reference));
     }
 
     #[test]
     fn test_task_desc_only_metadata() {
         let mut task = String::from("📅 2025-05-19");
         let (metadata, uuid) = extract_task_parts(&mut task);
-        assert_eq!(metadata.unwrap(), "📅 2025-05-19");
+        assert_eq!(metadata.clone().unwrap(), "📅 2025-05-19");
         assert!(uuid.is_none());
         assert_eq!(task, "");
+
+        let metadata_str = metadata.clone().unwrap();
+        let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
+        let reference = chrono_tz::America::Chicago.with_ymd_and_hms(2025, 5, 19, 0, 0, 0).unwrap();
+        assert_eq!(metadata_iter.next().unwrap(), ObsidianMetadata::Due(reference));
     }
 
     #[test]
     fn test_task_desc_emojis() {
         let mut task = String::from("Make a  🥪 📅 2025-05-19");
         let (metadata, uuid) = extract_task_parts(&mut task);
-        assert_eq!(metadata.unwrap(), "📅 2025-05-19");
+        assert_eq!(metadata.clone().unwrap(), "📅 2025-05-19");
         assert!(uuid.is_none());
         assert_eq!(task, "Make a  🥪");
+
+        let metadata_str = metadata.clone().unwrap();
+        let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
+        let reference = chrono_tz::America::Chicago.with_ymd_and_hms(2025, 5, 19, 0, 0, 0).unwrap();
+        assert_eq!(metadata_iter.next().unwrap(), ObsidianMetadata::Due(reference));
     }
 
     #[test]
