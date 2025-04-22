@@ -5,12 +5,19 @@ use regex::Regex;
 use std::{str::FromStr, string::String};
 use unicode_segmentation::{Graphemes, UnicodeSegmentation};
 use anyhow::{Result, Context, anyhow};
+use std::iter::Peekable;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Status {
     Pending,
     Complete,
     Canceled,
+}
+
+impl Default for Status {
+    fn default() -> Self {
+        Status::Pending
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -21,6 +28,12 @@ pub enum Priority {
     Medium,
     High,
     Highest,
+}
+
+impl Default for Priority {
+    fn default() -> Self {
+        Priority::Normal
+    }
 }
 
 const SIGNIFICANT_EMOJI: &[&str] = &[
@@ -41,6 +54,7 @@ const SIGNIFICANT_EMOJI: &[&str] = &[
     &"🔨",
 ];
 
+#[derive(Default, Debug, PartialEq)]
 pub struct ObsidianTask {
 	uuid: Option<Uuid>,
 	status: Status,
@@ -69,19 +83,19 @@ enum ObsidianMetadata {
 }
 
 struct MetadataParser<'a>{
-    metadata: Graphemes<'a>,
+    metadata: Peekable<Graphemes<'a>>,
     timezone: Tz,
 }
 
 impl MetadataParser<'_> {
     fn new(input: &'_ String, timezone: Tz) -> MetadataParser<'_> {
-        MetadataParser { metadata: input.graphemes(true), timezone }
+        MetadataParser { metadata: input.graphemes(true).peekable(), timezone }
     }
 }
 
 macro_rules! process_date {
     ($parser:ident, $variant:path) => {
-        let mut date: String = $parser.metadata.clone().take(11).collect();
+        let mut date: String = $parser.metadata.by_ref().take(11).collect();
         date = date.trim().to_string();
         let nd = NaiveDate::parse_from_str(&date, "%Y-%m-%d");
         if let Err(err) = nd {
@@ -104,52 +118,82 @@ impl Iterator for MetadataParser<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         // Find next significant emoji 
-        loop {
-            if let Some(grapheme) = self.metadata.next() {
-                match grapheme {
-                    "📅" => {
-                        process_date!(self, ObsidianMetadata::Due);
-                    },
-                    "⏳" => {
-                        process_date!(self, ObsidianMetadata::Scheduled);
-                    },
-                    "🛫" => {
-                        process_date!(self, ObsidianMetadata::Start);
-                    },
-                    "➕" => {
-                        process_date!(self, ObsidianMetadata::Created);
-                    },
-                    "✅" => {
-                        process_date!(self, ObsidianMetadata::Done);
-                    },
-                    "❌" => {
-                        process_date!(self, ObsidianMetadata::Canceled);
-                    },
-                    "🔺" => return Some(Ok(ObsidianMetadata::Priority(Priority::Highest))),
-                    "⏫" => return Some(Ok(ObsidianMetadata::Priority(Priority::High))),
-                    "🔼" => return Some(Ok(ObsidianMetadata::Priority(Priority::Medium))),
-                    "🔽" => return Some(Ok(ObsidianMetadata::Priority(Priority::Low))),
-                    "⏬️" => return Some(Ok(ObsidianMetadata::Priority(Priority::Lowest))),
-                    "🔨" => {
-                        let project: String = self.metadata.clone().take_while(|item| !SIGNIFICANT_EMOJI.contains(item)).collect();
-                        return Some(Ok(ObsidianMetadata::Project(project.trim().to_string())));
-                    },
-                    &_ => continue
-                };
-            }
-            break;
+        let iter = self.metadata.by_ref();
+        while let Some(grapheme) = iter.next() {
+            match grapheme {
+                "📅" => {
+                    process_date!(self, ObsidianMetadata::Due);
+                },
+                "⏳" => {
+                    process_date!(self, ObsidianMetadata::Scheduled);
+                },
+                "🛫" => {
+                    process_date!(self, ObsidianMetadata::Start);
+                },
+                "➕" => {
+                    process_date!(self, ObsidianMetadata::Created);
+                },
+                "✅" => {
+                    process_date!(self, ObsidianMetadata::Done);
+                },
+                "❌" => {
+                    process_date!(self, ObsidianMetadata::Canceled);
+                },
+                "🔺" => return Some(Ok(ObsidianMetadata::Priority(Priority::Highest))),
+                "⏫" => return Some(Ok(ObsidianMetadata::Priority(Priority::High))),
+                "🔼" => return Some(Ok(ObsidianMetadata::Priority(Priority::Medium))),
+                "🔽" => return Some(Ok(ObsidianMetadata::Priority(Priority::Low))),
+                "⏬️" => return Some(Ok(ObsidianMetadata::Priority(Priority::Lowest))),
+                "🔨" => {
+                    let mut project = String::new();
+                    while let Some(item) = iter.peek() {
+                        if SIGNIFICANT_EMOJI.contains(item) {
+                            break;
+                        }
+                        project.push_str(iter.next().unwrap());
+                    }
+                    return Some(Ok(ObsidianMetadata::Project(project.trim().to_string())));
+                },
+                &_ => continue
+            };
         }
         None
     }
 }
 
-pub fn parse<T: AsRef<str>>(task_string: T) -> Option<ObsidianTask> {
-    let mut owned_task_string = String::from(task_string.as_ref());
-    let status = parse_preamble(&mut owned_task_string);
-    let mut task_with_metadata = owned_task_string;
+pub fn parse(mut task_string: String, tz: chrono_tz::Tz) -> Option<ObsidianTask> {
+    let mut task = ObsidianTask::default();
 
+    let status = parse_preamble(&mut task_string);
+    task.status = status?;
 
-    None
+    let (metadata, uuid) = extract_task_parts(&mut task_string);
+    task.uuid = uuid.and_then(|id| id.ok());
+    let tags = parse_tags(&task_string);
+    task.tags = tags;
+
+    if task_string.len() == 0 {
+        return None
+    }
+    task.description = task_string;
+    
+    if let Some(metadata_str) = metadata {
+        let md = MetadataParser::new(&metadata_str, tz);
+        for data in md.filter_map(Result::ok) {
+            match data {
+                ObsidianMetadata::Due(date) => task.due = Some(date),
+                ObsidianMetadata::Done(date) => task.done = Some(date),
+                ObsidianMetadata::Start(date) => task.start = Some(date),
+                ObsidianMetadata::Created(date) => task.created = Some(date),
+                ObsidianMetadata::Canceled(date) => task.canceled = Some(date),
+                ObsidianMetadata::Scheduled(date) => task.scheduled = Some(date),
+                ObsidianMetadata::Priority(pri) => task.priority = pri,
+                ObsidianMetadata::Project(prj) => task.project = Some(prj),
+            }
+        }
+    }
+
+    Some(task)
 }
 
 fn extract_task_parts(task: &mut String) -> (Option<String>, Option<Result<Uuid>>) {
@@ -194,9 +238,25 @@ fn parse_preamble(task_string: &mut String) -> Option<Status> {
     Some(status)
 }
 
+fn parse_tags(task_string: &String) -> Vec<String> {
+    let mut tags = Vec::new();
+    let mut graphemes = task_string.graphemes(true);
+    while let Some(grapheme) = graphemes.next() {
+        if grapheme == "#" {
+            let some_tags: String = graphemes.clone().take_while(|item| *item != " ").collect();
+            for a_tag in some_tags.split(|tag| tag == '/') {
+                tags.push(a_tag.to_string());
+            }
+        }
+    }
+    tags
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs::Metadata;
+
+    use chrono_tz::America;
 
     use super::*;
 
@@ -325,11 +385,11 @@ mod tests {
 
     #[test]
     fn test_all() {
-        let mut task = String::from("Test task stuff 📅 2025-05-19 ⏳ 2025-05-19 🛫 2025-05-19 ➕ 2025-05-19 ✅ 2025-05-19 ❌ 2025-05-19 🔺⏫🔼🔽⏬️ 🔨 This is a project [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|]]");
+        let mut task = String::from("Test #task stuff #project/tag 📅 2025-05-19 ⏳ 2025-05-19 🛫 2025-05-19 ➕ 2025-05-19 ✅ 2025-05-19 ❌ 2025-05-19 🔨 This is a project 🔺⏫🔼🔽⏬️ [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|]]");
         let (metadata, uuid) = extract_task_parts(&mut task);
-        assert_eq!(metadata.clone().unwrap(), "📅 2025-05-19 ⏳ 2025-05-19 🛫 2025-05-19 ➕ 2025-05-19 ✅ 2025-05-19 ❌ 2025-05-19 🔺⏫🔼🔽⏬️ 🔨 This is a project");
+        assert_eq!(metadata.clone().unwrap(), "📅 2025-05-19 ⏳ 2025-05-19 🛫 2025-05-19 ➕ 2025-05-19 ✅ 2025-05-19 ❌ 2025-05-19 🔨 This is a project 🔺⏫🔼🔽⏬️");
         assert_eq!(uuid.unwrap().unwrap(), Uuid::parse_str("96bb3816-aedd-4033-8ff6-4746a700aac8").unwrap());
-        assert_eq!(task, "Test task stuff");
+        assert_eq!(task, "Test #task stuff #project/tag");
 
         let metadata_str = metadata.clone().unwrap();
         let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
@@ -340,12 +400,15 @@ mod tests {
         assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Created(reference));
         assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Done(reference));
         assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Canceled(reference));
+        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Project("This is a project".to_string()));
         assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::Highest));
         assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::High));
         assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::Medium));
         assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::Low));
         assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Priority(Priority::Lowest));
-        assert_eq!(metadata_iter.next().unwrap().unwrap(), ObsidianMetadata::Project("This is a project".to_string()));
+
+        let tags = parse_tags(&task);
+        assert_eq!(tags, ["task", "project", "tag"]);
     }
 
     #[test]
@@ -416,5 +479,26 @@ mod tests {
         assert_eq!(pending_status.unwrap(), Status::Pending);
         assert_eq!(canceled_status.unwrap(), Status::Canceled);
         assert_eq!(completed_status.unwrap(), Status::Complete);
+    }
+
+    #[test]
+    fn test_parse_tags() {
+        let tag_string = String::from("#These/are/some_tags and #tags");
+        let tags = parse_tags(&tag_string);
+        assert_eq!(tags, ["These", "are", "some_tags", "tags"]);
+    }
+
+    #[test]
+    fn test_full_parse() {
+        let task_string = String::from("- [ ] This is a simple #task 📅 2025-05-21");
+        let task = parse(task_string, America::Chicago); 
+        let ref_task = ObsidianTask {
+            status: Status::Pending,
+            due: Some(chrono_tz::America::Chicago.with_ymd_and_hms(2025, 5, 21, 0, 0, 0).unwrap()),
+            tags: vec!["task".to_string()],
+            description: String::from("This is a simple #task"),
+            ..Default::default()
+        };
+        assert_eq!(task.unwrap(), ref_task);
     }
 }
