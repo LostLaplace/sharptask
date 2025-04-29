@@ -6,6 +6,7 @@ use std::iter::Peekable;
 use std::{str::FromStr, string::String};
 use taskchampion::Uuid;
 use unicode_segmentation::{Graphemes, UnicodeSegmentation};
+use std::fmt;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum Status {
@@ -59,6 +60,17 @@ pub enum Priority {
 impl Default for Priority {
     fn default() -> Self {
         Priority::Normal
+    }
+}
+
+impl fmt::Display for Priority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Lowest | Self::Low => return write!(f, "L"),
+            Self::Normal => return write!(f, ""),
+            Self::Medium => return write!(f, "M"),
+            Self::High | Self::Highest => return write!(f, "H"),
+        }
     }
 }
 
