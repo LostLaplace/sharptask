@@ -2,11 +2,11 @@ use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, offset::LocalResult};
 use chrono_tz::Tz;
 use regex::Regex;
+use std::fmt;
 use std::iter::Peekable;
 use std::{str::FromStr, string::String};
-use taskchampion::Uuid;
+use taskchampion::{Task, Uuid};
 use unicode_segmentation::{Graphemes, UnicodeSegmentation};
-use std::fmt;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum Status {
@@ -93,6 +93,97 @@ pub struct ObsidianTask {
     pub canceled: Option<DateTime<Tz>>,
     pub priority: Priority,
     pub project: Option<String>,
+}
+
+macro_rules! compare_date_fn {
+    ($name:ident, $taskParam:tt, $tcData:tt) => {
+        pub fn $name(&self, other: &taskchampion::Task) -> bool {
+            let task_date = self.$taskParam.map(|ts| ts.timestamp());
+            let tc_date = other
+                .get_value($tcData)
+                .map(|ts| ts.parse::<i64>().ok())
+                .flatten();
+            task_date == tc_date
+        }
+    };
+}
+//TODO: write helper functions for each field and then implement PartialEq
+impl ObsidianTask {
+    compare_date_fn!(compare_due, due, "due");
+    compare_date_fn!(compare_schedule, scheduled, "scheduled");
+    compare_date_fn!(compare_start, start, "wait");
+    compare_date_fn!(compare_created, created, "created");
+    compare_date_fn!(compare_done, done, "end");
+    compare_date_fn!(compare_canceled, canceled, "end");
+
+    pub fn compare_uuid(&self, other: &taskchampion::Task) -> bool {
+        match self.uuid {
+            Some(uuid) => return uuid == other.get_uuid(),
+            None => return false,
+        };
+    }
+
+    pub fn compare_status(&self, other: &taskchampion::Task) -> bool {
+        self.status == other.get_status()
+    }
+
+    pub fn compare_description(&self, other: &taskchampion::Task) -> bool {
+        self.description == other.get_description()
+    }
+
+    pub fn compare_tags(&self, other: &taskchampion::Task) -> bool {
+        let tc_tags: Vec<String> = other
+            .get_tags()
+            .filter(|itm| itm.is_user())
+            .map(|itm| itm.to_string())
+            .collect();
+        if self.tags.len() != tc_tags.len() {
+            return false;
+        }
+
+        for tag in &self.tags {
+            if !tc_tags.contains(&tag) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    pub fn compare_priority(&self, other: &taskchampion::Task) -> bool {
+        if self.priority == Priority::Highest {
+            return other
+                .get_tags()
+                .filter(|itm| itm.is_user())
+                .map(|itm| itm.to_string())
+                .collect::<Vec<String>>()
+                .contains(&String::from("next"));
+        }
+        let tc_priority = other.get_value("priority").unwrap_or("");
+        self.priority.to_string() == tc_priority
+    }
+
+    pub fn compare_project(&self, other: &taskchampion::Task) -> bool {
+        let tc_project = other.get_value("project");
+        self.project == tc_project.map(|prj| prj.to_string())
+    }
+}
+
+impl PartialEq<Task> for ObsidianTask {
+    fn eq(&self, other: &Task) -> bool {
+        self.compare_due(other)
+            && self.compare_schedule(other)
+            && self.compare_start(other)
+            && self.compare_created(other)
+            && self.compare_done(other)
+            && self.compare_canceled(other)
+            && self.compare_uuid(other)
+            && self.compare_status(other)
+            && self.compare_description(other)
+            && self.compare_tags(other)
+            && self.compare_priority(other)
+            && self.compare_project(other)
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -331,15 +422,15 @@ mod tests {
                     due: Some(
                         chrono_tz::America::Chicago
                             .with_ymd_and_hms(2025, 5, 27, 0, 0, 0)
-                            .unwrap()
+                            .unwrap(),
                     ),
                     created: Some(
                         chrono_tz::America::Chicago
                             .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
-                            .unwrap()
+                            .unwrap(),
                     ),
                     ..Default::default()
-                })
+                }),
             ),
             (
                 "- [ ] Task with existing uuid [[uuid: a80c42ce-dd29-4dc7-8582-34f36fcf8b80|⚔️]]",
@@ -348,7 +439,7 @@ mod tests {
                     description: String::from("Task with existing uuid"),
                     uuid: Some(Uuid::from_str("a80c42ce-dd29-4dc7-8582-34f36fcf8b80").unwrap()),
                     ..Default::default()
-                })
+                }),
             ),
             (
                 "- [ ] Task with invalid uuid [[uuid: uh-oh|⚔️]]",
@@ -356,16 +447,16 @@ mod tests {
                     status: Status::Pending,
                     description: String::from("Task with invalid uuid"),
                     ..Default::default()
-                })
+                }),
             ),
             (
                 "- [ ] Task with #some/tags",
                 Some(ObsidianTask {
                     status: Status::Pending,
                     description: String::from("Task with #some/tags"),
-                    tags: vec!(String::from("some"), String::from("tags")),
+                    tags: vec![String::from("some"), String::from("tags")],
                     ..Default::default()
-                })
+                }),
             ),
             (
                 " - [-] Task with a project 🔨 Project text 🙂",
@@ -374,8 +465,8 @@ mod tests {
                     description: String::from("Task with a project"),
                     project: Some(String::from("Project text 🙂")),
                     ..Default::default()
-                })
-            )
+                }),
+            ),
         ];
 
         for test in test_bank {
@@ -756,5 +847,79 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(task.unwrap(), ref_task);
+    }
+
+    #[test]
+    fn test_compare_functions() {
+        let uuid = Uuid::new_v4();
+        let task = ObsidianTask {
+            uuid: Some(uuid),
+            description: String::from("This is a test"),
+            status: Status::Pending,
+            due: Some(
+                chrono_tz::America::Chicago
+                    .with_ymd_and_hms(2025, 6, 1, 0, 0, 0)
+                    .unwrap(),
+            ),
+            scheduled: Some(
+                chrono_tz::America::Chicago
+                    .with_ymd_and_hms(2025, 6, 1, 12, 0, 0)
+                    .unwrap(),
+            ),
+            tags: vec![
+                String::from("test"),
+                String::from("test2"),
+                String::from("next"),
+            ],
+            project: Some(String::from("Test project")),
+            priority: Priority::Highest,
+            ..Default::default()
+        };
+        let mut ops = taskchampion::Operations::new();
+        let mut tc_data = taskchampion::TaskData::create(uuid, &mut ops);
+        tc_data.update(
+            "scheduled",
+            Some(
+                chrono_tz::America::Chicago
+                    .with_ymd_and_hms(2025, 6, 1, 12, 0, 0)
+                    .unwrap()
+                    .timestamp()
+                    .to_string(),
+            ),
+            &mut ops,
+        );
+        tc_data.update(
+            "due",
+            Some(
+                chrono_tz::America::Chicago
+                    .with_ymd_and_hms(2025, 6, 1, 0, 0, 0)
+                    .unwrap()
+                    .timestamp()
+                    .to_string(),
+            ),
+            &mut ops,
+        );
+        tc_data.update("tag_test", Some(String::from("")), &mut ops);
+        tc_data.update("tag_test2", Some(String::from("")), &mut ops);
+        tc_data.update("tag_next", Some(String::from("")), &mut ops);
+        tc_data.update("priority", Some(String::from("H")), &mut ops);
+        tc_data.update("project", Some(String::from("Test project")), &mut ops);
+        let mut replica = taskchampion::Replica::new(
+            taskchampion::StorageConfig::InMemory
+                .into_storage()
+                .unwrap(),
+        );
+        let _ = replica.commit_operations(ops);
+        let mut tc_task = replica.get_task(uuid).unwrap().unwrap();
+        ops = taskchampion::Operations::new();
+        tc_task.set_status(taskchampion::Status::Pending, &mut ops);
+        tc_task.set_description("This is a test".to_string(), &mut ops);
+
+        assert!(task.compare_schedule(&tc_task));
+        assert!(task.compare_due(&tc_task));
+        assert!(task.compare_tags(&tc_task));
+        assert!(task.compare_project(&tc_task));
+        assert!(task.compare_priority(&tc_task));
+        assert_eq!(task, tc_task);
     }
 }

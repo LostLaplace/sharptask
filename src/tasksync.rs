@@ -43,133 +43,117 @@ impl TaskWarriorSync {
 
         if let Some(uuid) = task.uuid {
             if let Some(mut tc_task) = self.replica.get_task(uuid).ok().flatten() {
+                // If equal, skip processing
+                if *task == tc_task {
+                    return Ok(false);
+                }
+
                 // Status update
-                if task.status != tc_task.get_status() {
+                if !task.compare_status(&tc_task) {
                     tc_task.set_status(task.status.clone().into(), &mut ops)?;
                 }
 
                 // Description update
-                if task.description != tc_task.get_description() {
+                if !task.compare_description(&tc_task) {
                     tc_task.set_description(tc_task.get_description().to_string(), &mut ops)?;
                 }
 
                 // Due date update
-                println!("Due date processing");
-                let task_due_naive = task
-                    .due
-                    .map(|due| due.with_timezone(&chrono_tz::UTC).date_naive());
-                let tc_task_due_naive = tc_task.get_due().map(|due| due.date_naive());
-
-                if task_due_naive != tc_task_due_naive {
-                    println!("Due dates not equal");
-                    println!("task_due_naive: {:?}, tc_task_due_naive: {:?}", task_due_naive, tc_task_due_naive);
+                println!("{:?}", task);
+                println!("{:?}", tc_task);
+                if !task.compare_due(&tc_task) {
+                    println!("Setting due");
+                    println!("{:?}", task.due.map(|date| date.to_utc()));
                     tc_task.set_due(task.due.map(|date| date.to_utc()), &mut ops)?;
                 }
 
                 // Wait date update
-                let task_wait_naive = task
-                    .start
-                    .map(|wait| wait.with_timezone(&chrono_tz::UTC).date_naive());
-                let tc_task_wait_naive = tc_task.get_wait().map(|wait| wait.date_naive());
-
-                if task_wait_naive != tc_task_wait_naive {
+                if !task.compare_start(&tc_task) {
                     tc_task.set_wait(task.start.map(|date| date.to_utc()), &mut ops)?;
                 }
 
                 // Update priority
-                if task.status != tc_task.get_status() {
+                if !task.compare_priority(&tc_task) {
                     tc_task.set_status(task.status.clone().into(), &mut ops)?;
                 }
 
-                let mut task_data = tc_task.into_task_data();
                 // Update tags
-                let tc_tags: Vec<String> = task_data.iter().filter_map(|item| {
-                    if item.0.starts_with("tag_") {
-                        return Some(item.0.clone())
-                    }
-                    None
-                }).collect();
-
-                let mut update_tags = false;
-                if task.tags.len() != tc_tags.len() {
-                    update_tags = true;
-                } else {
-                    for tag in &task.tags {
-                        let tag_string = format!("tag_{tag}");
-                        if tc_tags.contains(&tag_string) {
-                            continue;
-                        } else {
-                            update_tags = true;
-                            break;
-                        }
-                    }
-                }
-                if update_tags {
+                if !task.compare_tags(&tc_task) {
                     // Clear out existing tags
-                    for tag in &tc_tags {
+                    for tag in tc_task
+                        .get_tags()
+                        .filter(|itm| itm.is_user())
+                        .collect::<Vec<taskchampion::Tag>>()
+                    {
                         let tag_string = format!("tag_{tag}");
-                        task_data.update(tag_string, None, &mut ops);
+                        tc_task.set_value(tag_string, None, &mut ops)?;
                     }
 
                     // Add new tags
                     for tag in &task.tags {
                         let tag_string = format!("tag_{tag}");
-                        task_data.update(tag_string, Some(String::new()), &mut ops);
+                        tc_task.set_value(tag_string, Some(String::new()), &mut ops)?;
                     }
                 }
-                
-                // Update end date
-                let end_date = task_data.get("end").map(|ts| chrono::DateTime::from_timestamp(ts.parse::<i64>().unwrap(), 0)).flatten();
-                let complete_date = task.done.map(|dt| dt.to_utc());
-                let canceled_date = task.canceled.map(|dt| dt.to_utc());
 
-                if task.status == taskparser::Status::Complete && complete_date != end_date {
-                    task_data.update("end", complete_date.map(|ed| ed.timestamp().to_string()), &mut ops);
+                // Update end date
+                if task.status == taskparser::Status::Complete && !task.compare_done(&tc_task) {
+                    tc_task.set_value(
+                        "end",
+                        task.done.map(|ed| ed.timestamp().to_string()),
+                        &mut ops,
+                    )?;
                 }
 
-                if task.status == taskparser::Status::Canceled && canceled_date != end_date {
-                    task_data.update("end", canceled_date.map(|ed| ed.timestamp().to_string()), &mut ops);
+                if task.status == taskparser::Status::Canceled && !task.compare_canceled(&tc_task) {
+                    tc_task.set_value(
+                        "end",
+                        task.canceled.map(|ed| ed.timestamp().to_string()),
+                        &mut ops,
+                    )?;
                 }
 
                 // Update scheduled
-                let tc_scheduled_date = task_data.get("scheduled").map(|ts| chrono::DateTime::from_timestamp(ts.parse::<i64>().unwrap(), 0)).flatten();
-                let scheduled_date = task.scheduled.map(|dt| dt.to_utc());
-
-                if scheduled_date != tc_scheduled_date {
-                    task_data.update("scheduled", scheduled_date.map(|ed| ed.timestamp().to_string()), &mut ops);
+                if !task.compare_schedule(&tc_task) {
+                    tc_task.set_value(
+                        "scheduled",
+                        task.scheduled.map(|ed| ed.timestamp().to_string()),
+                        &mut ops,
+                    )?;
                 }
-                
+
                 // Update priority
                 // Normal priority results in no special item in the task data
-                let tc_priority = task_data.get("priority").unwrap_or("");
-                if task.priority.to_string() != tc_priority {
+                if !task.compare_priority(&tc_task) {
                     let pri = match task.priority {
                         taskparser::Priority::Normal => None,
-                        _ => Some(task.priority.to_string())
+                        _ => Some(task.priority.to_string()),
                     };
-                    task_data.update("priority", pri, &mut ops);
-                }
-                // If highest priority, also set the +next tag
-                if task.priority == taskparser::Priority::Highest {
-                    task_data.update("tag_next", Some(String::from("")), &mut ops);
+                    tc_task.set_value("priority", pri, &mut ops)?;
+
+                    // If highest priority, also set the +next tag
+                    if task.priority == taskparser::Priority::Highest {
+                        tc_task.set_value("tag_next", Some(String::from("")), &mut ops)?;
+                    }
                 }
 
                 // Update project
-                let tc_project = task_data.get("project").map(|prj| prj.to_string());
-                if task.project != tc_project {
-                    task_data.update("project", task.project.clone(), &mut ops);
+                if !task.compare_project(&tc_task) {
+                    tc_task.set_value("project", task.project.clone(), &mut ops)?;
                 }
             }
 
+            println!("{:?}", ops);
             if ops.is_empty() {
                 return Ok(false);
             }
-            return self.replica
+            return self
+                .replica
                 .commit_operations(ops)
                 .map(|_| false)
                 .context("Failed committing operations");
         } else {
-            // Generate UUID and create task 
+            // Generate UUID and create task
 
             return Ok(true);
         }
@@ -182,11 +166,92 @@ mod tests {
 
     use chrono::TimeZone;
     use chrono_tz::America;
-    use taskchampion::Uuid;
+    use taskchampion::{Operations, Status, Task, Uuid};
 
     use super::*;
 
     const TZ: chrono_tz::Tz = America::Chicago;
+    const TODAY: i64 = 1746248400;
+    const MIDNIGHT: chrono::NaiveTime = chrono::NaiveTime::from_hms(0, 0, 0);
+
+    struct TestContext {
+        pub replica: Replica,
+        pub ops: Operations,
+    }
+
+    struct TaskBuilder<'a> {
+        context: &'a mut TestContext,
+        task: Task,
+    }
+
+    impl TaskBuilder<'_> {
+        fn new(context: &mut TestContext) -> TaskBuilder {
+            let uuid = Uuid::new_v4();
+            let _ = context.replica.create_task(uuid, &mut context.ops);
+            context.replica.commit_operations(context.ops.clone()).unwrap();
+            context.ops = Operations::new();
+            TaskBuilder {
+                task: context.replica.get_task(uuid).unwrap().unwrap(),
+                context,
+            }
+        }
+
+        fn desc<T: Into<String>>(mut self, description: T) -> Self {
+            let _ = self
+                .task
+                .set_description(description.into(), &mut self.context.ops);
+            self
+        }
+
+        fn status(mut self, status: Status) -> Self {
+            let _ = self.task.set_status(status, &mut self.context.ops);
+
+            self
+        }
+
+        fn due<T: Into<String>>(mut self, due: T) -> Self {
+            let due_dt = chrono::NaiveDate::parse_from_str(due.into().as_str(), "%Y-%m-%d").unwrap().and_time(MIDNIGHT).and_utc();
+
+            let _ = self.task.set_due(Some(due_dt), &mut self.context.ops);
+            self
+        }
+
+        fn build(self) -> Task {
+            let _ = self.context.replica.commit_operations(self.context.ops.clone());
+            self.task
+        }
+    }
+
+    impl TestContext {
+        fn new() -> TestContext {
+            TestContext {
+                replica: Replica::new(StorageConfig::InMemory.into_storage().unwrap()),
+                ops: Operations::new(),
+            }
+        }
+    }
+
+    #[test]
+    fn test_basic() {
+        let mut ctx = TestContext::new();
+        let tb = TaskBuilder::new(&mut ctx)
+            .desc("Test")
+            .status(Status::Pending)
+            .build();
+
+        let mut ot = ObsidianTask {
+            uuid: Some(tb.get_uuid()),
+            description: String::from("Test"),
+            status: taskparser::Status::Pending,
+            due: Some(chrono_tz::UTC.with_ymd_and_hms(2025, 05, 03, 0, 0, 0).unwrap()),
+            ..Default::default()
+        };
+
+        let mut ts = TaskWarriorSync::from_replica(ctx.replica, TZ);
+        assert!(!ts.md_to_tc(&mut ot).unwrap());
+        let updated_task = ts.get_replica().get_task(tb.get_uuid()).unwrap().unwrap();
+        assert_eq!(ot, updated_task);
+    }
 
     #[test]
     fn test_update_due_date() {
@@ -214,7 +279,11 @@ mod tests {
         assert!(!result);
 
         let mut rep2 = ts.get_replica();
-        let task2 = rep2.get_task(uuid.clone()).unwrap().unwrap().into_task_data();
+        let task2 = rep2
+            .get_task(uuid.clone())
+            .unwrap()
+            .unwrap()
+            .into_task_data();
         let next_tag = task2.get("tag_next");
         assert!(next_tag.is_none());
         assert_eq!(task2.get("priority"), None);
