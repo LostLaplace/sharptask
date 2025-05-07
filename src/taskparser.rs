@@ -169,6 +169,73 @@ impl ObsidianTask {
     }
 }
 
+pub struct ObsidianTaskBuilder {
+    task: ObsidianTask
+}
+
+macro_rules! set_date_fn {
+    ($taskMember:tt) => {
+        pub fn $taskMember<T: AsRef<str>>(mut self, date: T) -> Self {
+            let dt = chrono::DateTime::parse_from_rfc3339(date.as_ref()).unwrap();
+            //TODO remove this hack by changing the date type to naive date
+            self.task.$taskMember = Some(dt.with_timezone(&chrono_tz::America::Chicago));
+            self
+        }
+    };
+}
+
+impl ObsidianTaskBuilder {
+    pub fn new() -> ObsidianTaskBuilder {
+        let task = ObsidianTask::default();
+        ObsidianTaskBuilder {
+           task 
+        }
+    }
+
+    pub fn uuid(mut self, uuid: Uuid) -> Self {
+        self.task.uuid = Some(uuid);
+        self
+    }
+
+    pub fn status(mut self, status: Status) -> Self {
+        self.task.status = status;
+        self
+    }
+
+    pub fn description<T: Into<String>>(mut self, desc: T) -> Self {
+        self.task.description = desc.into();
+        self
+    }
+
+    pub fn tags(mut self, tags: &[&str]) -> Self {
+        let tag_strings = tags.iter().map(|itm| itm.to_string());
+        let tag_vec: Vec<String> = Vec::from_iter(tag_strings);
+        self.task.tags = tag_vec;
+        self
+    }
+
+    pub fn priority(mut self, priority: Priority) -> Self {
+        self.task.priority = priority;
+        self
+    }
+
+    pub fn project<T: Into<String>>(mut self, project: T) -> Self {
+        self.task.project = Some(project.into());
+        self
+    }
+
+    set_date_fn!(due);
+    set_date_fn!(scheduled);
+    set_date_fn!(start);
+    set_date_fn!(created);
+    set_date_fn!(done);
+    set_date_fn!(canceled);
+
+    pub fn build(self) -> ObsidianTask {
+        self.task
+    }
+}
+
 impl PartialEq<Task> for ObsidianTask {
     fn eq(&self, other: &Task) -> bool {
         self.compare_due(other)

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use taskchampion::storage::AccessMode;
 use taskchampion::{Replica, StorageConfig};
 
-use crate::taskparser::{self, ObsidianTask};
+use crate::taskparser::{self, ObsidianTask, ObsidianTaskBuilder};
 
 pub struct TaskWarriorSync {
     replica: Replica,
@@ -37,7 +37,7 @@ impl TaskWarriorSync {
 
     // Updates any taskchampion copies of the task to match the markdown representation
     // Returns true if the markdown should be updated, false if no further changes needed
-    pub fn md_to_tc(&mut self, task: &mut ObsidianTask) -> Result<bool> {
+    pub fn md_to_tc(&mut self, task: &ObsidianTask) -> Result<bool> {
         // 1. If task has UUID, find it in TC DB
         let mut ops = taskchampion::Operations::new();
 
@@ -59,11 +59,7 @@ impl TaskWarriorSync {
                 }
 
                 // Due date update
-                println!("{:?}", task);
-                println!("{:?}", tc_task);
                 if !task.compare_due(&tc_task) {
-                    println!("Setting due");
-                    println!("{:?}", task.due.map(|date| date.to_utc()));
                     tc_task.set_due(task.due.map(|date| date.to_utc()), &mut ops)?;
                 }
 
@@ -143,7 +139,6 @@ impl TaskWarriorSync {
                 }
             }
 
-            println!("{:?}", ops);
             if ops.is_empty() {
                 return Ok(false);
             }
@@ -184,6 +179,17 @@ mod tests {
         task: Task,
     }
 
+    macro_rules! tb_date_fn {
+        ($tcData:tt) => {
+            fn $tcData<T: AsRef<str>>(mut self, date: T) -> Self {
+                let dt = chrono::NaiveDate::parse_from_str(date.as_ref(), "%Y-%m-%d").unwrap().and_time(MIDNIGHT).and_utc();
+
+                let _ = self.task.set_value("$tcData", Some(dt.timestamp().to_string()), &mut self.context.ops);
+                self
+            }
+        };
+    }
+
     impl TaskBuilder<'_> {
         fn new(context: &mut TestContext) -> TaskBuilder {
             let uuid = Uuid::new_v4();
@@ -209,10 +215,19 @@ mod tests {
             self
         }
 
-        fn due<T: Into<String>>(mut self, due: T) -> Self {
-            let due_dt = chrono::NaiveDate::parse_from_str(due.into().as_str(), "%Y-%m-%d").unwrap().and_time(MIDNIGHT).and_utc();
+        tb_date_fn!(due);
+        tb_date_fn!(scheduled);
+        tb_date_fn!(wait);
+        tb_date_fn!(created);
+        tb_date_fn!(end);
 
-            let _ = self.task.set_due(Some(due_dt), &mut self.context.ops);
+        fn priority<T: Into<String>>(mut self, priority: T) -> Self {
+            let _ = self.task.set_priority(priority.into(), &mut self.context.ops);
+            self
+        }
+
+        fn project<T: Into<String>>(mut self, project: T) -> Self {
+            let _ = self.task.set_value("project", Some(project.into()), &mut self.context.ops);
             self
         }
 
@@ -239,6 +254,13 @@ mod tests {
             .status(Status::Pending)
             .build();
 
+        let mut ot = ObsidianTaskBuilder::new()
+            .uuid(tb.get_uuid()) 
+            .description("Test")
+            .status(taskparser::Status::Pending)
+            .due("2025-05-03T00:00:00Z")
+            .build();
+        /*
         let mut ot = ObsidianTask {
             uuid: Some(tb.get_uuid()),
             description: String::from("Test"),
@@ -246,6 +268,7 @@ mod tests {
             due: Some(chrono_tz::UTC.with_ymd_and_hms(2025, 05, 03, 0, 0, 0).unwrap()),
             ..Default::default()
         };
+        */
 
         let mut ts = TaskWarriorSync::from_replica(ctx.replica, TZ);
         assert!(!ts.md_to_tc(&mut ot).unwrap());
