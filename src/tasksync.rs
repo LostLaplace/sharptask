@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::NaiveTime;
 use std::path::PathBuf;
 use taskchampion::storage::AccessMode;
 use taskchampion::{Replica, StorageConfig};
@@ -58,14 +59,16 @@ impl TaskWarriorSync {
                     tc_task.set_description(tc_task.get_description().to_string(), &mut ops)?;
                 }
 
+                const MIDNIGHT: NaiveTime = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+
                 // Due date update
                 if !task.compare_due(&tc_task) {
-                    tc_task.set_due(task.due.map(|date| date.to_utc()), &mut ops)?;
+                    tc_task.set_due(task.due.map(|date| date.and_time(MIDNIGHT).and_utc()), &mut ops)?;
                 }
 
                 // Wait date update
                 if !task.compare_start(&tc_task) {
-                    tc_task.set_wait(task.start.map(|date| date.to_utc()), &mut ops)?;
+                    tc_task.set_wait(task.start.map(|date| date.and_time(MIDNIGHT).and_utc()), &mut ops)?;
                 }
 
                 // Update priority
@@ -96,7 +99,7 @@ impl TaskWarriorSync {
                 if task.status == taskparser::Status::Complete && !task.compare_done(&tc_task) {
                     tc_task.set_value(
                         "end",
-                        task.done.map(|ed| ed.timestamp().to_string()),
+                        task.done.map(|ed| ed.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
                         &mut ops,
                     )?;
                 }
@@ -104,7 +107,7 @@ impl TaskWarriorSync {
                 if task.status == taskparser::Status::Canceled && !task.compare_canceled(&tc_task) {
                     tc_task.set_value(
                         "end",
-                        task.canceled.map(|ed| ed.timestamp().to_string()),
+                        task.canceled.map(|ed| ed.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
                         &mut ops,
                     )?;
                 }
@@ -113,7 +116,7 @@ impl TaskWarriorSync {
                 if !task.compare_schedule(&tc_task) {
                     tc_task.set_value(
                         "scheduled",
-                        task.scheduled.map(|ed| ed.timestamp().to_string()),
+                        task.scheduled.map(|ed| ed.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
                         &mut ops,
                     )?;
                 }
@@ -162,6 +165,8 @@ mod tests {
     use chrono::TimeZone;
     use chrono_tz::America;
     use taskchampion::{Operations, Status, Task, Uuid};
+
+    use crate::taskparser::Priority;
 
     use super::*;
 
@@ -266,17 +271,8 @@ mod tests {
             .uuid(tb.get_uuid()) 
             .description("Test")
             .status(taskparser::Status::Pending)
-            .due("2025-05-03T00:00:00Z")
+            .due("2025-05-03")
             .build();
-        /*
-        let mut ot = ObsidianTask {
-            uuid: Some(tb.get_uuid()),
-            description: String::from("Test"),
-            status: taskparser::Status::Pending,
-            due: Some(chrono_tz::UTC.with_ymd_and_hms(2025, 05, 03, 0, 0, 0).unwrap()),
-            ..Default::default()
-        };
-        */
 
         let mut ts = TaskWarriorSync::from_replica(ctx.replica, TZ);
         assert!(!ts.md_to_tc(&mut ot).unwrap());
@@ -296,15 +292,14 @@ mod tests {
         let mut ts = TaskWarriorSync::from_replica(replica, TZ);
 
         let due_date = chrono::Utc.with_ymd_and_hms(2025, 5, 28, 0, 0, 0).unwrap();
-        let mut task = ObsidianTask {
-            uuid: Some(uuid.clone()),
-            description: "Test task".to_string(),
-            status: taskparser::Status::Pending,
-            due: Some(due_date.with_timezone(&chrono_tz::America::Chicago)),
-            project: Some(String::from("My project")),
-            priority: taskparser::Priority::Normal,
-            ..Default::default()
-        };
+        let mut task = ObsidianTaskBuilder::new()
+            .uuid(uuid.clone())
+            .description("Test task")
+            .status(taskparser::Status::Pending)
+            .due("2025-05-28")
+            .project("My project")
+            .priority(Priority::Normal)
+            .build();
 
         let result = ts.md_to_tc(&mut task).unwrap();
         assert!(!result);

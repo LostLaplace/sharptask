@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, offset::LocalResult};
-use chrono_tz::Tz;
 use regex::Regex;
 use std::fmt;
 use std::iter::Peekable;
@@ -85,20 +84,22 @@ pub struct ObsidianTask {
     pub status: Status,
     pub description: String,
     pub tags: Vec<String>,
-    pub due: Option<DateTime<Tz>>,
-    pub scheduled: Option<DateTime<Tz>>,
-    pub start: Option<DateTime<Tz>>,
-    pub created: Option<DateTime<Tz>>,
-    pub done: Option<DateTime<Tz>>,
-    pub canceled: Option<DateTime<Tz>>,
+    pub due: Option<NaiveDate>,
+    pub scheduled: Option<NaiveDate>,
+    pub start: Option<NaiveDate>,
+    pub created: Option<NaiveDate>,
+    pub done: Option<NaiveDate>,
+    pub canceled: Option<NaiveDate>,
     pub priority: Priority,
     pub project: Option<String>,
 }
 
+const MIDNIGHT: chrono::NaiveTime = chrono::NaiveTime::from_hms(0, 0, 0);
+
 macro_rules! compare_date_fn {
     ($name:ident, $taskParam:tt, $tcData:tt) => {
         pub fn $name(&self, other: &taskchampion::Task) -> bool {
-            let task_date = self.$taskParam.map(|ts| ts.timestamp());
+            let task_date = self.$taskParam.map(|ts| ts.and_time(MIDNIGHT).and_utc().timestamp());
             let tc_date = other
                 .get_value($tcData)
                 .map(|ts| ts.parse::<i64>().ok())
@@ -176,9 +177,8 @@ pub struct ObsidianTaskBuilder {
 macro_rules! set_date_fn {
     ($taskMember:tt) => {
         pub fn $taskMember<T: AsRef<str>>(mut self, date: T) -> Self {
-            let dt = chrono::DateTime::parse_from_rfc3339(date.as_ref()).unwrap();
-            //TODO remove this hack by changing the date type to naive date
-            self.task.$taskMember = Some(dt.with_timezone(&chrono_tz::America::Chicago));
+            let dt = chrono::NaiveDate::parse_from_str(date.as_ref(), "%Y-%m-%d").unwrap();
+            self.task.$taskMember = Some(dt);
             self
         }
     };
@@ -255,26 +255,24 @@ impl PartialEq<Task> for ObsidianTask {
 
 #[derive(Debug, PartialEq)]
 enum ObsidianMetadata {
-    Due(DateTime<Tz>),
-    Scheduled(DateTime<Tz>),
-    Start(DateTime<Tz>),
-    Created(DateTime<Tz>),
-    Done(DateTime<Tz>),
-    Canceled(DateTime<Tz>),
+    Due(NaiveDate),
+    Scheduled(NaiveDate),
+    Start(NaiveDate),
+    Created(NaiveDate),
+    Done(NaiveDate),
+    Canceled(NaiveDate),
     Priority(Priority),
     Project(String),
 }
 
 struct MetadataParser<'a> {
     metadata: Peekable<Graphemes<'a>>,
-    timezone: Tz,
 }
 
 impl MetadataParser<'_> {
-    fn new(input: &'_ String, timezone: Tz) -> MetadataParser<'_> {
+    fn new(input: &'_ String) -> MetadataParser<'_> {
         MetadataParser {
             metadata: input.graphemes(true).peekable(),
-            timezone,
         }
     }
 }
@@ -292,18 +290,7 @@ macro_rules! process_date {
             )));
         }
 
-        let local_nd = NaiveDateTime::from(nd.unwrap()).and_local_timezone($parser.timezone);
-
-        match local_nd {
-            LocalResult::Single(single_nd) => return Some(Ok($variant(single_nd))),
-            LocalResult::Ambiguous(single_nd, _) => return Some(Ok($variant(single_nd))),
-            LocalResult::None => {
-                return Some(Err(anyhow!(
-                    "Error converting to timezone: {}",
-                    $parser.timezone
-                )))
-            }
-        };
+        return Some(Ok($variant(nd.unwrap())));
     };
 }
 
@@ -355,7 +342,7 @@ impl Iterator for MetadataParser<'_> {
     }
 }
 
-pub fn parse(mut task_string: String, tz: chrono_tz::Tz) -> Option<ObsidianTask> {
+pub fn parse(mut task_string: String) -> Option<ObsidianTask> {
     let mut task = ObsidianTask::default();
 
     let status = parse_preamble(&mut task_string);
@@ -372,7 +359,7 @@ pub fn parse(mut task_string: String, tz: chrono_tz::Tz) -> Option<ObsidianTask>
     task.description = task_string;
 
     if let Some(metadata_str) = metadata {
-        let md = MetadataParser::new(&metadata_str, tz);
+        let md = MetadataParser::new(&metadata_str);
         for data in md.filter_map(Result::ok) {
             match data {
                 ObsidianMetadata::Due(date) => task.due = Some(date),
@@ -476,7 +463,7 @@ mod tests {
                     due: Some(
                         chrono_tz::America::Chicago
                             .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
-                            .unwrap(),
+                            .unwrap().date_naive()
                     ),
                     ..Default::default()
                 }),
@@ -489,12 +476,12 @@ mod tests {
                     due: Some(
                         chrono_tz::America::Chicago
                             .with_ymd_and_hms(2025, 5, 27, 0, 0, 0)
-                            .unwrap(),
+                            .unwrap().date_naive(),
                     ),
                     created: Some(
                         chrono_tz::America::Chicago
                             .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
-                            .unwrap(),
+                            .unwrap().date_naive(),
                     ),
                     ..Default::default()
                 }),
@@ -538,7 +525,7 @@ mod tests {
 
         for test in test_bank {
             let test_local = String::from(test.0);
-            let task = parse(test_local, chrono_tz::America::Chicago);
+            let task = parse(test_local);
             assert_eq!(task, test.1);
         }
     }
@@ -570,10 +557,10 @@ mod tests {
         assert_eq!(task, "Task data that is");
 
         let metadata_str = metadata.clone().unwrap();
-        let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
+        let mut metadata_iter = MetadataParser::new(&metadata_str);
         let reference = chrono_tz::America::Chicago
             .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
-            .unwrap();
+            .unwrap().date_naive();
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
             ObsidianMetadata::Due(reference)
@@ -589,13 +576,13 @@ mod tests {
         assert_eq!(task, "");
 
         let metadata_str = metadata.clone().unwrap();
-        let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
+        let mut metadata_iter = MetadataParser::new(&metadata_str);
         let reference = chrono_tz::America::Chicago
             .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
             .unwrap();
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Due(reference)
+            ObsidianMetadata::Due(reference.date_naive())
         );
     }
 
@@ -608,13 +595,13 @@ mod tests {
         assert_eq!(task, "Make a  🥪");
 
         let metadata_str = metadata.clone().unwrap();
-        let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
+        let mut metadata_iter = MetadataParser::new(&metadata_str);
         let reference = chrono_tz::America::Chicago
             .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
             .unwrap();
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Due(reference)
+            ObsidianMetadata::Due(reference.date_naive())
         );
     }
 
@@ -671,33 +658,33 @@ mod tests {
         assert_eq!(task, "Test task stuff");
 
         let metadata_str = metadata.clone().unwrap();
-        let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
+        let mut metadata_iter = MetadataParser::new(&metadata_str);
         let reference = chrono_tz::America::Chicago
             .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
             .unwrap();
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Due(reference)
+            ObsidianMetadata::Due(reference.date_naive())
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Scheduled(reference)
+            ObsidianMetadata::Scheduled(reference.date_naive())
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Start(reference)
+            ObsidianMetadata::Start(reference.date_naive())
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Created(reference)
+            ObsidianMetadata::Created(reference.date_naive())
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Done(reference)
+            ObsidianMetadata::Done(reference.date_naive())
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Canceled(reference)
+            ObsidianMetadata::Canceled(reference.date_naive())
         );
     }
 
@@ -715,7 +702,7 @@ mod tests {
         assert_eq!(task, "Test task stuff");
 
         let metadata_str = metadata.clone().unwrap();
-        let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
+        let mut metadata_iter = MetadataParser::new(&metadata_str);
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
             ObsidianMetadata::Priority(Priority::Highest)
@@ -755,33 +742,33 @@ mod tests {
         assert_eq!(task, "Test #task stuff #project/tag");
 
         let metadata_str = metadata.clone().unwrap();
-        let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
+        let mut metadata_iter = MetadataParser::new(&metadata_str);
         let reference = chrono_tz::America::Chicago
             .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
             .unwrap();
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Due(reference)
+            ObsidianMetadata::Due(reference.date_naive())
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Scheduled(reference)
+            ObsidianMetadata::Scheduled(reference.date_naive())
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Start(reference)
+            ObsidianMetadata::Start(reference.date_naive())
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Created(reference)
+            ObsidianMetadata::Created(reference.date_naive())
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Done(reference)
+            ObsidianMetadata::Done(reference.date_naive())
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Canceled(reference)
+            ObsidianMetadata::Canceled(reference.date_naive())
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
@@ -818,7 +805,7 @@ mod tests {
             String::from("Test task stuff 📅25 [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔️]]");
         let (metadata, _) = extract_task_parts(&mut task);
         let metadata_str = metadata.clone().unwrap();
-        let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
+        let mut metadata_iter = MetadataParser::new(&metadata_str);
         assert!(metadata_iter.next().unwrap().is_err());
     }
 
@@ -836,7 +823,7 @@ mod tests {
         assert_eq!(task, "Test task stuff");
 
         let metadata_str = metadata.clone().unwrap();
-        let mut metadata_iter = MetadataParser::new(&metadata_str, chrono_tz::America::Chicago);
+        let mut metadata_iter = MetadataParser::new(&metadata_str);
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
             ObsidianMetadata::Project("This is a test project".to_string())
@@ -901,13 +888,13 @@ mod tests {
     #[test]
     fn test_full_parse() {
         let task_string = String::from("- [ ] This is a simple #task 📅 2025-05-21");
-        let task = parse(task_string, America::Chicago);
+        let task = parse(task_string);
         let ref_task = ObsidianTask {
             status: Status::Pending,
             due: Some(
                 chrono_tz::America::Chicago
                     .with_ymd_and_hms(2025, 5, 21, 0, 0, 0)
-                    .unwrap(),
+                    .unwrap().date_naive(),
             ),
             tags: vec!["task".to_string()],
             description: String::from("This is a simple #task"),
@@ -924,14 +911,10 @@ mod tests {
             description: String::from("This is a test"),
             status: Status::Pending,
             due: Some(
-                chrono_tz::America::Chicago
-                    .with_ymd_and_hms(2025, 6, 1, 0, 0, 0)
-                    .unwrap(),
+                chrono::NaiveDate::parse_from_str("2025-06-02", "%Y-%m-%d").unwrap()
             ),
             scheduled: Some(
-                chrono_tz::America::Chicago
-                    .with_ymd_and_hms(2025, 6, 1, 12, 0, 0)
-                    .unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap()
             ),
             tags: vec![
                 String::from("test"),
@@ -947,22 +930,14 @@ mod tests {
         tc_data.update(
             "scheduled",
             Some(
-                chrono_tz::America::Chicago
-                    .with_ymd_and_hms(2025, 6, 1, 12, 0, 0)
-                    .unwrap()
-                    .timestamp()
-                    .to_string(),
+                chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp().to_string()
             ),
             &mut ops,
         );
         tc_data.update(
             "due",
             Some(
-                chrono_tz::America::Chicago
-                    .with_ymd_and_hms(2025, 6, 1, 0, 0, 0)
-                    .unwrap()
-                    .timestamp()
-                    .to_string(),
+                chrono::NaiveDate::from_ymd_opt(2025, 6, 2).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp().to_string()
             ),
             &mut ops,
         );
