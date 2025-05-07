@@ -231,6 +231,14 @@ mod tests {
             self
         }
 
+        fn tags(mut self, tags: &[&str]) -> Self {
+            for tag in tags {
+                let tag_str = format!("tag_{tag}");
+                let _ = self.task.set_value(tag_str, Some("".to_string()), &mut self.context.ops);
+            }
+            self
+        }
+
         fn build(self) -> Task {
             let _ = self.context.replica.commit_operations(self.context.ops.clone());
             self.task
