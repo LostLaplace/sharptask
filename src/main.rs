@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use ignore::{types::TypesBuilder, WalkBuilder};
 use grep::{regex::RegexMatcher, searcher::Searcher, searcher::sinks};
 //use taskchampion::{storage::AccessMode, Operations, Replica, Status, StorageConfig, Uuid};
@@ -9,7 +11,11 @@ mod config;
 mod taskparser;
 mod tasksync;
 
+#[cfg(test)]
+mod testutil;
+
 fn main() -> Result<()> {
+    
     let cfg = config::get(); 
 
     // 1. Find all md files in vault

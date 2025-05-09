@@ -4,13 +4,14 @@ use chrono_tz::Tz;
 use serde::Deserialize;
 use anyhow::{anyhow, Result};
 use std::path::Path;
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Debug)]
 pub struct Config {
-    pub vault_path: PathBuf,
+    pub vault_path: Option<PathBuf>,
+    pub file_path: Option<PathBuf>,
     pub task_path: PathBuf,
-    pub timezone: Tz
+    pub direction: Direction,
 }
 
 const DEFAULT_PATH: &str = "~/.sharptask/config.toml";
@@ -19,7 +20,6 @@ const DEFAULT_PATH: &str = "~/.sharptask/config.toml";
 struct ConfigFile {
     vault_path: Option<PathBuf>,
     task_path: Option<PathBuf>,
-    timezone: Option<String>
 }
 
 impl Default for ConfigFile {
@@ -27,7 +27,6 @@ impl Default for ConfigFile {
         ConfigFile {
             vault_path: None,
             task_path: Some(PathBuf::from("~/.task")),
-            timezone: localzone::get_local_zone()
         }
     }
 }
@@ -36,12 +35,29 @@ impl Default for ConfigFile {
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    #[arg(short, long)]
-    vault: Option<PathBuf>,
+    #[command(flatten)]
+    target: Target,
     #[arg(short, long)]
     task_db: Option<PathBuf>,
     #[arg(short, long)]
     config: Option<PathBuf>,
+    #[command(subcommand)]
+    dir: Direction,
+}
+
+#[derive(Subcommand, Debug)]
+enum Direction {
+    MdToTc,
+    TcToMd
+}
+
+#[derive(Args, Debug)]
+#[group(required=false, multiple=false)]
+struct Target {
+    #[arg(short, long)]
+    vault: Option<PathBuf>,
+    #[arg(short, long)]
+    file: Option<PathBuf>,
 }
 
 pub fn get() -> Config {
@@ -58,12 +74,12 @@ pub fn get() -> Config {
     // The user can override a few of the options via CLI flags,
     // ensure that these items are either defined in the config or 
     // via CLI
-    let vault_path = cli.vault.or(parsed_config.vault_path)
+    let vault_path = cli.target.vault.or(parsed_config.vault_path)
         .map(|path| {
             let path_str = path.to_string_lossy();
             let expanded = shellexpand::tilde(&path_str);
             PathBuf::from(expanded.into_owned())
-        }).expect("Vault must be provided via CLI or config");
+        });
 
     let task_path = cli.task_db.or(parsed_config.task_path)
         .map(|path| {
@@ -72,15 +88,11 @@ pub fn get() -> Config {
             PathBuf::from(expanded.into_owned())
         }).expect("Task DB path must be provided via --task_db or config");
 
-    let timezone = parsed_config.timezone.or(localzone::get_local_zone())
-        .expect("Cannot determine a timezone");
-
-    let tz = Tz::from_str(&timezone).expect(&format!("Cannot process timezone: {}", timezone));
-
     Config {
         vault_path,
         task_path,
-        timezone: tz
+        file_path: cli.target.file,
+        direction: cli.dir
     }
 }
 
@@ -100,12 +112,10 @@ mod tests {
     fn parse_simple_config() {
         let test_config = r#"vault_path = "~/myVault"
                              task_path = "~/taskPath"
-                             timezone = "US/Central"
                          "#;
         let test_file = testfile::from(test_config);
         let my_config = parse(test_file).unwrap();
         assert_eq!(my_config.vault_path.unwrap(), PathBuf::from("~/myVault"));
         assert_eq!(my_config.task_path.unwrap(), PathBuf::from("~/taskPath"));
-        assert_eq!(my_config.timezone.unwrap(), "US/Central".to_string());
     }
 }

@@ -5,7 +5,6 @@ use taskchampion::storage::AccessMode;
 use taskchampion::{Replica, StorageConfig};
 
 use crate::taskparser::{self, ObsidianTask, ObsidianTaskBuilder};
-use crate::testutil::{self, TestContext};
 
 pub struct TaskWarriorSync {
     replica: Replica,
