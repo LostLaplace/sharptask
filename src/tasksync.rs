@@ -5,14 +5,14 @@ use taskchampion::storage::AccessMode;
 use taskchampion::{Replica, StorageConfig};
 
 use crate::taskparser::{self, ObsidianTask, ObsidianTaskBuilder};
+use crate::testutil::{self, TestContext};
 
 pub struct TaskWarriorSync {
     replica: Replica,
-    timezone: chrono_tz::Tz,
 }
 
 impl TaskWarriorSync {
-    pub fn new(path: &PathBuf, timezone: chrono_tz::Tz) -> Result<Self> {
+    pub fn new(path: &PathBuf) -> Result<Self> {
         let storage = StorageConfig::OnDisk {
             taskdb_dir: path.clone(),
             create_if_missing: false,
@@ -21,14 +21,13 @@ impl TaskWarriorSync {
         .into_storage()
         .context("Failed to build storage context")?;
         Ok(TaskWarriorSync {
-            replica: Replica::new(storage),
-            timezone,
+            replica: Replica::new(storage)
         })
     }
 
     #[cfg(test)]
-    fn from_replica(replica: Replica, timezone: chrono_tz::Tz) -> Self {
-        TaskWarriorSync { replica, timezone }
+    fn from_replica(replica: Replica) -> Self {
+        TaskWarriorSync { replica }
     }
 
     #[cfg(test)]
@@ -167,177 +166,116 @@ mod tests {
     use taskchampion::{Operations, Status, Task, Uuid};
 
     use crate::taskparser::Priority;
+    use crate::testutil::{self, create_mem_replica, TaskBuilder, TestContext};
 
     use super::*;
 
-    const TZ: chrono_tz::Tz = America::Chicago;
-    const TODAY: i64 = 1746248400;
-    const MIDNIGHT: chrono::NaiveTime = chrono::NaiveTime::from_hms(0, 0, 0);
-
-    struct TestContext {
-        pub replica: Replica,
-        pub ops: Operations,
-    }
-
-    struct TaskBuilder<'a> {
-        context: &'a mut TestContext,
-        task: Task,
-    }
-
-    macro_rules! tb_date_fn {
-        ($tcData:tt) => {
-            fn $tcData<T: AsRef<str>>(mut self, date: T) -> Self {
-                let dt = chrono::NaiveDate::parse_from_str(date.as_ref(), "%Y-%m-%d").unwrap().and_time(MIDNIGHT).and_utc();
-
-                let _ = self.task.set_value("$tcData", Some(dt.timestamp().to_string()), &mut self.context.ops);
-                self
-            }
-        };
-    }
-
-    impl TaskBuilder<'_> {
-        fn new(context: &mut TestContext) -> TaskBuilder {
-            let uuid = Uuid::new_v4();
-            let _ = context.replica.create_task(uuid, &mut context.ops);
-            context.replica.commit_operations(context.ops.clone()).unwrap();
-            context.ops = Operations::new();
-            TaskBuilder {
-                task: context.replica.get_task(uuid).unwrap().unwrap(),
-                context,
-            }
-        }
-
-        fn desc<T: Into<String>>(mut self, description: T) -> Self {
-            let _ = self
-                .task
-                .set_description(description.into(), &mut self.context.ops);
-            self
-        }
-
-        fn status(mut self, status: Status) -> Self {
-            let _ = self.task.set_status(status, &mut self.context.ops);
-
-            self
-        }
-
-        tb_date_fn!(due);
-        tb_date_fn!(scheduled);
-        tb_date_fn!(wait);
-        tb_date_fn!(created);
-        tb_date_fn!(end);
-
-        fn priority<T: Into<String>>(mut self, priority: T) -> Self {
-            let _ = self.task.set_priority(priority.into(), &mut self.context.ops);
-            self
-        }
-
-        fn project<T: Into<String>>(mut self, project: T) -> Self {
-            let _ = self.task.set_value("project", Some(project.into()), &mut self.context.ops);
-            self
-        }
-
-        fn tags(mut self, tags: &[&str]) -> Self {
-            for tag in tags {
-                let tag_str = format!("tag_{tag}");
-                let _ = self.task.set_value(tag_str, Some("".to_string()), &mut self.context.ops);
-            }
-            self
-        }
-
-        fn build(self) -> Task {
-            let _ = self.context.replica.commit_operations(self.context.ops.clone());
-            self.task
-        }
-    }
-
-    impl TestContext {
-        fn new() -> TestContext {
-            TestContext {
-                replica: Replica::new(StorageConfig::InMemory.into_storage().unwrap()),
-                ops: Operations::new(),
-            }
-        }
-    }
-
-    #[test]
-    fn test_basic() {
-        let mut ctx = TestContext::new();
-        let tb = TaskBuilder::new(&mut ctx)
-            .desc("Test")
-            .status(Status::Pending)
-            .build();
-
-        let mut ot = ObsidianTaskBuilder::new()
-            .uuid(tb.get_uuid()) 
-            .description("Test")
-            .status(taskparser::Status::Pending)
-            .due("2025-05-03")
-            .build();
-
-        let mut ts = TaskWarriorSync::from_replica(ctx.replica, TZ);
-        assert!(!ts.md_to_tc(&mut ot).unwrap());
-        let updated_task = ts.get_replica().get_task(tb.get_uuid()).unwrap().unwrap();
-        assert_eq!(ot, updated_task);
-    }
-
     #[test]
     fn test_update_due_date() {
-        let mut replica = Replica::new(StorageConfig::InMemory.into_storage().unwrap());
-        let mut ops = taskchampion::Operations::new();
-        let uuid = Uuid::from_str("96bb3816-aedd-4033-8ff6-4746a700aac8").unwrap();
-        let mut task = replica.create_task(uuid.clone(), &mut ops).unwrap();
-        let _ = task.set_description("Test task".to_string(), &mut ops);
-        let _ = task.set_status(taskchampion::Status::Pending, &mut ops);
-        let _ = replica.commit_operations(ops);
-        let mut ts = TaskWarriorSync::from_replica(replica, TZ);
+        let mut replica = create_mem_replica();
+        let mut context = TestContext::new(&mut replica);
+        let mut tc_task = TaskBuilder::new(&mut context)
+            .desc("Test task")
+            .status(taskchampion::Status::Pending)
+            .build();
 
-        let due_date = chrono::Utc.with_ymd_and_hms(2025, 5, 28, 0, 0, 0).unwrap();
-        let mut task = ObsidianTaskBuilder::new()
-            .uuid(uuid.clone())
+        let mut ts = TaskWarriorSync::from_replica(replica);
+
+        let obs_task = ObsidianTaskBuilder::new()
+            .uuid(tc_task.get_uuid())
             .description("Test task")
-            .status(taskparser::Status::Pending)
             .due("2025-05-28")
             .project("My project")
             .priority(Priority::Normal)
             .build();
 
-        let result = ts.md_to_tc(&mut task).unwrap();
+        let result = ts.md_to_tc(&obs_task).unwrap();
         assert!(!result);
 
-        let mut rep2 = ts.get_replica();
-        let task2 = rep2
-            .get_task(uuid.clone())
+        tc_task = ts.replica
+            .get_task(tc_task.get_uuid())
             .unwrap()
-            .unwrap()
-            .into_task_data();
-        let next_tag = task2.get("tag_next");
-        assert!(next_tag.is_none());
-        assert_eq!(task2.get("priority"), None);
+            .unwrap();
+        assert_eq!(obs_task, tc_task);
     }
 
-    //TODO: surely there's an easier way?
     #[test]
     fn test_create_task() {
-        let mut replica = Replica::new(StorageConfig::InMemory.into_storage().unwrap());
-        let mut ops = taskchampion::Operations::new();
-        let uuid = Uuid::from_str("96bb3816-aedd-4033-8ff6-4746a700aac8").unwrap();
-        let mut task = replica.create_task(uuid.clone(), &mut ops).unwrap();
-        let _ = task.set_description("Test task".to_string(), &mut ops);
-        let _ = task.set_status(taskchampion::Status::Pending, &mut ops);
-        let _ = replica.commit_operations(ops);
-        let mut ts = TaskWarriorSync::from_replica(replica, TZ);
+        let mut replica = create_mem_replica();
+        let mut context = TestContext::new(&mut replica);
+        let mut tc_task = TaskBuilder::new(&mut context)
+            .desc("Test task")
+            .status(taskchampion::Status::Pending)
+            .build();
 
-        let mut task = ObsidianTask {
-            uuid: Some(uuid.clone()),
-            description: "Test task".to_string(),
-            status: crate::taskparser::Status::Complete,
-            ..Default::default()
-        };
+        let mut task = ObsidianTaskBuilder::new()
+            .uuid(tc_task.get_uuid())
+            .description("Test task")
+            .status(taskparser::Status::Complete)
+            .build();
+
+        let mut ts = TaskWarriorSync::from_replica(replica);
+
         let result = ts.md_to_tc(&mut task).unwrap();
         assert!(!result);
 
-        let mut rep2 = ts.get_replica();
-        let task2 = rep2.get_task(uuid.clone()).unwrap().unwrap();
-        assert_eq!(task2.get_status(), taskchampion::Status::Completed);
+        tc_task = ts.replica.get_task(tc_task.get_uuid()).unwrap().unwrap();
+        assert_eq!(tc_task.get_status(), taskchampion::Status::Completed);
+    }
+
+    #[test]
+    fn test_highest_pri() {
+        let mut replica = create_mem_replica();
+        let mut context = TestContext::new(&mut replica);
+        let mut tc_task = TaskBuilder::new(&mut context)
+            .desc("Test task")
+            .status(taskchampion::Status::Pending)
+            .priority("")
+            .build();
+
+        let mut task = ObsidianTaskBuilder::new()
+            .uuid(tc_task.get_uuid())
+            .description("Test task")
+            .priority(Priority::Highest)
+            .build();
+
+        let mut ts = TaskWarriorSync::from_replica(replica);
+
+        let result = ts.md_to_tc(&mut task).unwrap();
+        assert!(!result);
+
+        tc_task = ts.replica.get_task(tc_task.get_uuid()).unwrap().unwrap();
+        assert_eq!(tc_task.get_priority(), "H");
+        assert!(tc_task.get_value("tag_next").is_some());
+    }
+
+    #[test]
+    fn test_pri_demote() {
+        let mut replica = create_mem_replica();
+        let mut context = TestContext::new(&mut replica);
+        let mut tc_task = TaskBuilder::new(&mut context)
+            .desc("Test task")
+            .status(taskchampion::Status::Pending)
+            .priority("H")
+            .tags(&[
+                "next"
+            ])
+            .build();
+
+        let mut task = ObsidianTaskBuilder::new()
+            .uuid(tc_task.get_uuid())
+            .description("Test task")
+            .priority(Priority::High)
+            .build();
+
+        let mut ts = TaskWarriorSync::from_replica(replica);
+
+        let result = ts.md_to_tc(&mut task).unwrap();
+        assert!(!result);
+
+        tc_task = ts.replica.get_task(tc_task.get_uuid()).unwrap().unwrap();
+        assert_eq!(tc_task.get_priority(), "H");
+        assert!(tc_task.get_value("tag_next").is_none());
+        assert_eq!(task, tc_task);
     }
 }

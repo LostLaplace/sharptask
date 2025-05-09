@@ -99,7 +99,9 @@ const MIDNIGHT: chrono::NaiveTime = chrono::NaiveTime::from_hms(0, 0, 0);
 macro_rules! compare_date_fn {
     ($name:ident, $taskParam:tt, $tcData:tt) => {
         pub fn $name(&self, other: &taskchampion::Task) -> bool {
-            let task_date = self.$taskParam.map(|ts| ts.and_time(MIDNIGHT).and_utc().timestamp());
+            let task_date = self
+                .$taskParam
+                .map(|ts| ts.and_time(MIDNIGHT).and_utc().timestamp());
             let tc_date = other
                 .get_value($tcData)
                 .map(|ts| ts.parse::<i64>().ok())
@@ -171,7 +173,7 @@ impl ObsidianTask {
 }
 
 pub struct ObsidianTaskBuilder {
-    task: ObsidianTask
+    task: ObsidianTask,
 }
 
 macro_rules! set_date_fn {
@@ -187,9 +189,7 @@ macro_rules! set_date_fn {
 impl ObsidianTaskBuilder {
     pub fn new() -> ObsidianTaskBuilder {
         let task = ObsidianTask::default();
-        ObsidianTaskBuilder {
-           task 
-        }
+        ObsidianTaskBuilder { task }
     }
 
     pub fn uuid(mut self, uuid: Uuid) -> Self {
@@ -441,6 +441,9 @@ mod tests {
     use std::fs::Metadata;
 
     use chrono_tz::America;
+    use testfile::create;
+
+    use crate::testutil::{create_mem_replica, TaskBuilder, TestContext};
 
     use super::*;
 
@@ -449,77 +452,87 @@ mod tests {
         let test_bank = vec![
             (
                 "- [ ] This is some simple text",
-                Some(ObsidianTask {
-                    status: Status::Pending,
-                    description: String::from("This is some simple text"),
-                    ..Default::default()
-                }),
+                Some(
+                    ObsidianTaskBuilder::new()
+                        .status(Status::Pending)
+                        .description("This is some simple text")
+                        .build(),
+                ),
             ),
             (
                 "- [ ] Task with due date 📅 2025-05-19",
-                Some(ObsidianTask {
-                    status: Status::Pending,
-                    description: String::from("Task with due date"),
-                    due: Some(
-                        chrono_tz::America::Chicago
-                            .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
-                            .unwrap().date_naive()
-                    ),
-                    ..Default::default()
-                }),
+                Some(
+                    ObsidianTaskBuilder::new()
+                        .status(Status::Pending)
+                        .description("Task with due date")
+                        .due("2025-05-19")
+                        .build(),
+                ),
             ),
             (
                 "- [x] Task with due date and creation date 📅 2025-05-27 ➕ 2025-05-19",
-                Some(ObsidianTask {
-                    status: Status::Complete,
-                    description: String::from("Task with due date and creation date"),
-                    due: Some(
-                        chrono_tz::America::Chicago
-                            .with_ymd_and_hms(2025, 5, 27, 0, 0, 0)
-                            .unwrap().date_naive(),
-                    ),
-                    created: Some(
-                        chrono_tz::America::Chicago
-                            .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
-                            .unwrap().date_naive(),
-                    ),
-                    ..Default::default()
-                }),
+                Some(
+                    ObsidianTaskBuilder::new()
+                        .status(Status::Complete)
+                        .description("Task with due date and creation date")
+                        .due("2025-05-27")
+                        .created("2025-05-19")
+                        .build(),
+                ),
             ),
             (
                 "- [ ] Task with existing uuid [[uuid: a80c42ce-dd29-4dc7-8582-34f36fcf8b80|⚔️]]",
-                Some(ObsidianTask {
-                    status: Status::Pending,
-                    description: String::from("Task with existing uuid"),
-                    uuid: Some(Uuid::from_str("a80c42ce-dd29-4dc7-8582-34f36fcf8b80").unwrap()),
-                    ..Default::default()
-                }),
+                Some(
+                    ObsidianTaskBuilder::new()
+                        .uuid(Uuid::parse_str("a80c42ce-dd29-4dc7-8582-34f36fcf8b80").unwrap())
+                        .description("Task with existing uuid")
+                        .build()
+                )
             ),
             (
                 "- [ ] Task with invalid uuid [[uuid: uh-oh|⚔️]]",
-                Some(ObsidianTask {
-                    status: Status::Pending,
-                    description: String::from("Task with invalid uuid"),
-                    ..Default::default()
-                }),
+                Some(
+                    ObsidianTaskBuilder::new()
+                        .description("Task with invalid uuid")
+                        .build()
+                )
             ),
             (
                 "- [ ] Task with #some/tags",
-                Some(ObsidianTask {
-                    status: Status::Pending,
-                    description: String::from("Task with #some/tags"),
-                    tags: vec![String::from("some"), String::from("tags")],
-                    ..Default::default()
-                }),
+                Some(
+                    ObsidianTaskBuilder::new()
+                        .description("Task with #some/tags")
+                        .tags(&[
+                            "some",
+                            "tags"
+                        ])
+                        .build()
+                )
             ),
             (
                 " - [-] Task with a project 🔨 Project text 🙂",
-                Some(ObsidianTask {
-                    status: Status::Canceled,
-                    description: String::from("Task with a project"),
-                    project: Some(String::from("Project text 🙂")),
-                    ..Default::default()
-                }),
+                Some(
+                    ObsidianTaskBuilder::new()
+                        .status(Status::Canceled)
+                        .description("Task with a project")
+                        .project("Project text 🙂")
+                        .build()
+                )
+            ),
+            (
+                "- [ ] Test task stuff 📅 2025-05-19 ⏳ 2025-05-20 🛫 2025-05-21 ➕ 2025-05-22 ✅ 2025-05-23 ❌ 2025-05-24 [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔️]]",
+                Some(
+                    ObsidianTaskBuilder::new()
+                        .description("Test task stuff")
+                        .due("2025-05-19")
+                        .start("2025-05-21")
+                        .scheduled("2025-05-20")
+                        .created("2025-05-22")
+                        .done("2025-05-23")
+                        .canceled("2025-05-24")
+                        .uuid(Uuid::parse_str("96bb3816-aedd-4033-8ff6-4746a700aac8").unwrap())
+                        .build()
+                )
             ),
         ];
 
@@ -528,164 +541,6 @@ mod tests {
             let task = parse(test_local);
             assert_eq!(task, test.1);
         }
-    }
-
-    #[test]
-    fn test_task_desc_trivial() {
-        let mut trivial_case = String::from("");
-        let (metadata, uuid) = extract_task_parts(&mut trivial_case);
-        assert!(metadata.is_none());
-        assert!(uuid.is_none());
-        assert_eq!(trivial_case, "");
-    }
-
-    #[test]
-    fn test_task_desc_simple() {
-        let mut simple_task = String::from("This is some simple text");
-        let (metadata, uuid) = extract_task_parts(&mut simple_task);
-        assert!(metadata.is_none());
-        assert!(uuid.is_none());
-        assert_eq!(simple_task, "This is some simple text");
-    }
-
-    #[test]
-    fn test_task_desc_with_metadata() {
-        let mut task = String::from("Task data that is 📅 2025-05-19");
-        let (metadata, uuid) = extract_task_parts(&mut task);
-        assert_eq!(metadata.clone().unwrap(), "📅 2025-05-19");
-        assert!(uuid.is_none());
-        assert_eq!(task, "Task data that is");
-
-        let metadata_str = metadata.clone().unwrap();
-        let mut metadata_iter = MetadataParser::new(&metadata_str);
-        let reference = chrono_tz::America::Chicago
-            .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
-            .unwrap().date_naive();
-        assert_eq!(
-            metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Due(reference)
-        );
-    }
-
-    #[test]
-    fn test_task_desc_only_metadata() {
-        let mut task = String::from("📅 2025-05-19");
-        let (metadata, uuid) = extract_task_parts(&mut task);
-        assert_eq!(metadata.clone().unwrap(), "📅 2025-05-19");
-        assert!(uuid.is_none());
-        assert_eq!(task, "");
-
-        let metadata_str = metadata.clone().unwrap();
-        let mut metadata_iter = MetadataParser::new(&metadata_str);
-        let reference = chrono_tz::America::Chicago
-            .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
-            .unwrap();
-        assert_eq!(
-            metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Due(reference.date_naive())
-        );
-    }
-
-    #[test]
-    fn test_task_desc_emojis() {
-        let mut task = String::from("Make a  🥪 📅 2025-05-19");
-        let (metadata, uuid) = extract_task_parts(&mut task);
-        assert_eq!(metadata.clone().unwrap(), "📅 2025-05-19");
-        assert!(uuid.is_none());
-        assert_eq!(task, "Make a  🥪");
-
-        let metadata_str = metadata.clone().unwrap();
-        let mut metadata_iter = MetadataParser::new(&metadata_str);
-        let reference = chrono_tz::America::Chicago
-            .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
-            .unwrap();
-        assert_eq!(
-            metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Due(reference.date_naive())
-        );
-    }
-
-    #[test]
-    fn test_uuid() {
-        let mut task =
-            String::from("Test task stuff [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔️]]");
-        let (metadata, uuid) = extract_task_parts(&mut task);
-        assert!(metadata.is_none());
-        assert_eq!(
-            uuid.unwrap().unwrap(),
-            Uuid::parse_str("96bb3816-aedd-4033-8ff6-4746a700aac8").unwrap()
-        );
-        assert_eq!(task, "Test task stuff");
-    }
-
-    #[test]
-    fn test_bad_uuid() {
-        let mut task = String::from("Test task stuff [[uuid: abcd|⚔️]]");
-        let (metadata, uuid) = extract_task_parts(&mut task);
-        assert!(metadata.is_none());
-        assert!(uuid.unwrap().is_err());
-        assert_eq!(task, "Test task stuff");
-    }
-
-    #[test]
-    fn test_metadata_and_uuid() {
-        let mut task = String::from(
-            "Test task stuff 📅 2025-05-19 [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔️]]",
-        );
-        let (metadata, uuid) = extract_task_parts(&mut task);
-        assert_eq!(metadata.unwrap(), "📅 2025-05-19");
-        assert_eq!(
-            uuid.unwrap().unwrap(),
-            Uuid::parse_str("96bb3816-aedd-4033-8ff6-4746a700aac8").unwrap()
-        );
-        assert_eq!(task, "Test task stuff");
-    }
-
-    #[test]
-    fn test_all_date_types() {
-        let mut task = String::from(
-            "Test task stuff 📅 2025-05-19 ⏳ 2025-05-19 🛫 2025-05-19 ➕ 2025-05-19 ✅ 2025-05-19 ❌ 2025-05-19 [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔️]]",
-        );
-        let (metadata, uuid) = extract_task_parts(&mut task);
-        assert_eq!(
-            metadata.clone().unwrap(),
-            "📅 2025-05-19 ⏳ 2025-05-19 🛫 2025-05-19 ➕ 2025-05-19 ✅ 2025-05-19 ❌ 2025-05-19"
-        );
-        assert_eq!(
-            uuid.unwrap().unwrap(),
-            Uuid::parse_str("96bb3816-aedd-4033-8ff6-4746a700aac8").unwrap()
-        );
-        assert_eq!(task, "Test task stuff");
-
-        let metadata_str = metadata.clone().unwrap();
-        let mut metadata_iter = MetadataParser::new(&metadata_str);
-        let reference = chrono_tz::America::Chicago
-            .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
-            .unwrap();
-        assert_eq!(
-            metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Due(reference.date_naive())
-        );
-        assert_eq!(
-            metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Scheduled(reference.date_naive())
-        );
-        assert_eq!(
-            metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Start(reference.date_naive())
-        );
-        assert_eq!(
-            metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Created(reference.date_naive())
-        );
-        assert_eq!(
-            metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Done(reference.date_naive())
-        );
-        assert_eq!(
-            metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Canceled(reference.date_naive())
-        );
     }
 
     #[test]
@@ -810,153 +665,40 @@ mod tests {
     }
 
     #[test]
-    fn test_project() {
-        let mut task = String::from(
-            "Test task stuff 🔨 This is a test project [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔️]]",
-        );
-        let (metadata, uuid) = extract_task_parts(&mut task);
-        assert_eq!(metadata.clone().unwrap(), "🔨 This is a test project");
-        assert_eq!(
-            uuid.unwrap().unwrap(),
-            Uuid::parse_str("96bb3816-aedd-4033-8ff6-4746a700aac8").unwrap()
-        );
-        assert_eq!(task, "Test task stuff");
-
-        let metadata_str = metadata.clone().unwrap();
-        let mut metadata_iter = MetadataParser::new(&metadata_str);
-        assert_eq!(
-            metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Project("This is a test project".to_string())
-        );
-    }
-
-    #[test]
-    fn test_parse_preamble() {
-        let mut trivial_case = String::from("");
-        let status = parse_preamble(&mut trivial_case);
-        assert!(status.is_none());
-        assert_eq!(trivial_case, "");
-    }
-
-    #[test]
-    fn test_no_task() {
-        let mut no_task = String::from("This contains no task");
-        let status = parse_preamble(&mut no_task);
-        assert!(status.is_none());
-        assert_eq!(no_task, "This contains no task");
-    }
-
-    #[test]
-    fn test_simple_task() {
-        let mut simple_task = String::from("- [ ] Complete this test");
-        let status = parse_preamble(&mut simple_task);
-        assert_eq!(status.unwrap(), Status::Pending);
-        assert_eq!(simple_task, "Complete this test");
-    }
-
-    #[test]
-    fn test_whitespace_task() {
-        let mut whitespace_task = String::from("    - [ ] Complete this test");
-        let status = parse_preamble(&mut whitespace_task);
-        assert_eq!(status.unwrap(), Status::Pending);
-        assert_eq!(whitespace_task, "Complete this test");
-    }
-
-    #[test]
-    fn test_all_status_types() {
-        let pending = "- [ ] Pending task";
-        let canceled = "- [-] Canceled task";
-        let completed = "- [x] Completed task";
-        let mut pending_string = String::from(pending);
-        let mut canceled_string = String::from(canceled);
-        let mut completed_string = String::from(completed);
-        let pending_status = parse_preamble(&mut pending_string);
-        let canceled_status = parse_preamble(&mut canceled_string);
-        let completed_status = parse_preamble(&mut completed_string);
-        assert_eq!(pending_status.unwrap(), Status::Pending);
-        assert_eq!(canceled_status.unwrap(), Status::Canceled);
-        assert_eq!(completed_status.unwrap(), Status::Complete);
-    }
-
-    #[test]
-    fn test_parse_tags() {
-        let tag_string = String::from("#These/are/some_tags and #tags");
-        let tags = parse_tags(&tag_string);
-        assert_eq!(tags, ["These", "are", "some_tags", "tags"]);
-    }
-
-    #[test]
-    fn test_full_parse() {
-        let task_string = String::from("- [ ] This is a simple #task 📅 2025-05-21");
-        let task = parse(task_string);
-        let ref_task = ObsidianTask {
-            status: Status::Pending,
-            due: Some(
-                chrono_tz::America::Chicago
-                    .with_ymd_and_hms(2025, 5, 21, 0, 0, 0)
-                    .unwrap().date_naive(),
-            ),
-            tags: vec!["task".to_string()],
-            description: String::from("This is a simple #task"),
-            ..Default::default()
-        };
-        assert_eq!(task.unwrap(), ref_task);
-    }
-
-    #[test]
     fn test_compare_functions() {
-        let uuid = Uuid::new_v4();
-        let task = ObsidianTask {
-            uuid: Some(uuid),
-            description: String::from("This is a test"),
-            status: Status::Pending,
-            due: Some(
-                chrono::NaiveDate::parse_from_str("2025-06-02", "%Y-%m-%d").unwrap()
-            ),
-            scheduled: Some(
-                chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap()
-            ),
-            tags: vec![
-                String::from("test"),
-                String::from("test2"),
-                String::from("next"),
-            ],
-            project: Some(String::from("Test project")),
-            priority: Priority::Highest,
-            ..Default::default()
-        };
-        let mut ops = taskchampion::Operations::new();
-        let mut tc_data = taskchampion::TaskData::create(uuid, &mut ops);
-        tc_data.update(
-            "scheduled",
-            Some(
-                chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp().to_string()
-            ),
-            &mut ops,
-        );
-        tc_data.update(
-            "due",
-            Some(
-                chrono::NaiveDate::from_ymd_opt(2025, 6, 2).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp().to_string()
-            ),
-            &mut ops,
-        );
-        tc_data.update("tag_test", Some(String::from("")), &mut ops);
-        tc_data.update("tag_test2", Some(String::from("")), &mut ops);
-        tc_data.update("tag_next", Some(String::from("")), &mut ops);
-        tc_data.update("priority", Some(String::from("H")), &mut ops);
-        tc_data.update("project", Some(String::from("Test project")), &mut ops);
-        let mut replica = taskchampion::Replica::new(
-            taskchampion::StorageConfig::InMemory
-                .into_storage()
-                .unwrap(),
-        );
-        let _ = replica.commit_operations(ops);
-        let mut tc_task = replica.get_task(uuid).unwrap().unwrap();
-        ops = taskchampion::Operations::new();
-        tc_task.set_status(taskchampion::Status::Pending, &mut ops);
-        tc_task.set_description("This is a test".to_string(), &mut ops);
+        let mut replica = create_mem_replica();
+        let mut test_context = TestContext::new(&mut replica);
+        let tc_task = TaskBuilder::new(&mut test_context)
+            .status(taskchampion::Status::Pending)
+            .desc("This is a test")
+            .scheduled("2025-06-01")
+            .due("2025-06-02")
+            .tags(&[
+                "test",
+                "test2",
+                "next",
+            ])
+            .priority("H")
+            .project("Test project")
+            .build();
 
+        let task = ObsidianTaskBuilder::new()
+            .uuid(tc_task.get_uuid())
+            .description("This is a test")
+            .due("2025-06-02")
+            .scheduled("2025-06-01")
+            .tags(&[
+                "test",
+                "test2",
+                "next"
+            ])
+            .project("Test project")
+            .priority(Priority::Highest)
+            .build();
+        
+        assert!(task.compare_uuid(&tc_task));
+        assert!(task.compare_description(&tc_task));
+        assert!(task.compare_status(&tc_task));
         assert!(task.compare_schedule(&tc_task));
         assert!(task.compare_due(&tc_task));
         assert!(task.compare_tags(&tc_task));
