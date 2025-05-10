@@ -1,8 +1,8 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::NaiveTime;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use taskchampion::storage::AccessMode;
-use taskchampion::{Replica, StorageConfig};
+use taskchampion::{Replica, StorageConfig, Uuid};
 
 use crate::taskparser::{self, ObsidianTask, ObsidianTaskBuilder};
 
@@ -20,7 +20,7 @@ impl TaskWarriorSync {
         .into_storage()
         .context("Failed to build storage context")?;
         Ok(TaskWarriorSync {
-            replica: Replica::new(storage)
+            replica: Replica::new(storage),
         })
     }
 
@@ -36,7 +36,7 @@ impl TaskWarriorSync {
 
     // Updates any taskchampion copies of the task to match the markdown representation
     // Returns true if the markdown should be updated, false if no further changes needed
-    pub fn md_to_tc(&mut self, task: &ObsidianTask) -> Result<bool> {
+    pub fn md_to_tc<T: AsRef<Path>>(&mut self, task: &ObsidianTask, file: T) -> Result<bool> {
         // 1. If task has UUID, find it in TC DB
         let mut ops = taskchampion::Operations::new();
 
@@ -61,12 +61,18 @@ impl TaskWarriorSync {
 
                 // Due date update
                 if !task.compare_due(&tc_task) {
-                    tc_task.set_due(task.due.map(|date| date.and_time(MIDNIGHT).and_utc()), &mut ops)?;
+                    tc_task.set_due(
+                        task.due.map(|date| date.and_time(MIDNIGHT).and_utc()),
+                        &mut ops,
+                    )?;
                 }
 
                 // Wait date update
                 if !task.compare_start(&tc_task) {
-                    tc_task.set_wait(task.start.map(|date| date.and_time(MIDNIGHT).and_utc()), &mut ops)?;
+                    tc_task.set_wait(
+                        task.start.map(|date| date.and_time(MIDNIGHT).and_utc()),
+                        &mut ops,
+                    )?;
                 }
 
                 // Update priority
@@ -97,7 +103,8 @@ impl TaskWarriorSync {
                 if task.status == taskparser::Status::Complete && !task.compare_done(&tc_task) {
                     tc_task.set_value(
                         "end",
-                        task.done.map(|ed| ed.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                        task.done
+                            .map(|ed| ed.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
                         &mut ops,
                     )?;
                 }
@@ -105,7 +112,8 @@ impl TaskWarriorSync {
                 if task.status == taskparser::Status::Canceled && !task.compare_canceled(&tc_task) {
                     tc_task.set_value(
                         "end",
-                        task.canceled.map(|ed| ed.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                        task.canceled
+                            .map(|ed| ed.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
                         &mut ops,
                     )?;
                 }
@@ -114,7 +122,8 @@ impl TaskWarriorSync {
                 if !task.compare_schedule(&tc_task) {
                     tc_task.set_value(
                         "scheduled",
-                        task.scheduled.map(|ed| ed.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                        task.scheduled
+                            .map(|ed| ed.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
                         &mut ops,
                     )?;
                 }
@@ -124,9 +133,11 @@ impl TaskWarriorSync {
                 if !task.compare_priority(&tc_task) {
                     let pri = match task.priority {
                         taskparser::Priority::Normal => None,
-                        _ => Some(task.priority.to_string()),
+                        taskparser::Priority::Lowest | taskparser::Priority::Low => Some("L"),
+                        taskparser::Priority::Medium => Some("M"),
+                        taskparser::Priority::High | taskparser::Priority::Highest => Some("H"),
                     };
-                    tc_task.set_value("priority", pri, &mut ops)?;
+                    tc_task.set_value("priority", pri.map(|x| x.to_string()), &mut ops)?;
 
                     // If highest priority, also set the +next tag
                     if task.priority == taskparser::Priority::Highest {
@@ -150,8 +161,69 @@ impl TaskWarriorSync {
                 .context("Failed committing operations");
         } else {
             // Generate UUID and create task
+            const MIDNIGHT: NaiveTime = NaiveTime::from_hms(0, 0, 0);
+            let uuid = Uuid::new_v4();
+            let mut tc_task = self.replica.create_task(uuid, &mut ops)?;
+            tc_task.set_status(task.status.clone().into(), &mut ops)?;
+            tc_task.set_description(task.description.clone(), &mut ops)?;
+            tc_task.set_value(
+                "due",
+                task.due
+                    .map(|x| x.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                &mut ops,
+            )?;
+            tc_task.set_value(
+                "wait",
+                task.start
+                    .map(|x| x.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                &mut ops,
+            )?;
+            tc_task.set_value(
+                "scheduled",
+                task.scheduled
+                    .map(|x| x.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                &mut ops,
+            )?;
+            tc_task.set_value(
+                "created",
+                task.created
+                    .map(|x| x.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                &mut ops,
+            )?;
+            tc_task.set_value(
+                "end",
+                task.done
+                    .map(|x| x.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                &mut ops,
+            )?;
+            tc_task.set_value(
+                "end",
+                task.canceled
+                    .map(|x| x.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                &mut ops,
+            )?;
 
-            return Ok(true);
+            let pri = match task.priority {
+                taskparser::Priority::Lowest | taskparser::Priority::Low => Some("L"),
+                taskparser::Priority::Normal => None,
+                taskparser::Priority::Medium => Some("M"),
+                taskparser::Priority::High | taskparser::Priority::Highest => Some("H"),
+            };
+            tc_task.set_value("priority", pri.map(|x| x.to_string()), &mut ops)?;
+            if task.priority == taskparser::Priority::Highest {
+                tc_task.set_value("tag_next", Some("".to_string()), &mut ops)?;
+            }
+
+            tc_task.set_value("project", task.project.clone(), &mut ops)?;
+
+            for tag in &task.tags {
+                let tag_str = format!("tag_{}", tag);
+                tc_task.set_value(tag_str, Some("".to_string()), &mut ops)?;
+            }
+
+            self.replica.commit_operations(ops).context("Failed to commit operations")?;
+
+            return Ok(true)
         }
     }
 }
@@ -160,12 +232,11 @@ impl TaskWarriorSync {
 mod tests {
     use std::str::FromStr;
 
-    use chrono::TimeZone;
-    use chrono_tz::America;
     use taskchampion::{Operations, Status, Task, Uuid};
 
     use crate::taskparser::Priority;
-    use crate::testutil::{self, create_mem_replica, TaskBuilder, TestContext};
+    use crate::testutil::{self, TaskBuilder, TestContext, create_mem_replica};
+    use std::path::Path;
 
     use super::*;
 
@@ -188,13 +259,10 @@ mod tests {
             .priority(Priority::Normal)
             .build();
 
-        let result = ts.md_to_tc(&obs_task).unwrap();
+        let result = ts.md_to_tc(&obs_task, "").unwrap();
         assert!(!result);
 
-        tc_task = ts.replica
-            .get_task(tc_task.get_uuid())
-            .unwrap()
-            .unwrap();
+        tc_task = ts.replica.get_task(tc_task.get_uuid()).unwrap().unwrap();
         assert_eq!(obs_task, tc_task);
     }
 
@@ -215,7 +283,7 @@ mod tests {
 
         let mut ts = TaskWarriorSync::from_replica(replica);
 
-        let result = ts.md_to_tc(&mut task).unwrap();
+        let result = ts.md_to_tc(&mut task, "").unwrap();
         assert!(!result);
 
         tc_task = ts.replica.get_task(tc_task.get_uuid()).unwrap().unwrap();
@@ -240,7 +308,7 @@ mod tests {
 
         let mut ts = TaskWarriorSync::from_replica(replica);
 
-        let result = ts.md_to_tc(&mut task).unwrap();
+        let result = ts.md_to_tc(&mut task, "").unwrap();
         assert!(!result);
 
         tc_task = ts.replica.get_task(tc_task.get_uuid()).unwrap().unwrap();
@@ -256,9 +324,7 @@ mod tests {
             .desc("Test task")
             .status(taskchampion::Status::Pending)
             .priority("H")
-            .tags(&[
-                "next"
-            ])
+            .tags(&["next"])
             .build();
 
         let mut task = ObsidianTaskBuilder::new()
@@ -269,12 +335,34 @@ mod tests {
 
         let mut ts = TaskWarriorSync::from_replica(replica);
 
-        let result = ts.md_to_tc(&mut task).unwrap();
+        let result = ts.md_to_tc(&mut task, "").unwrap();
         assert!(!result);
 
         tc_task = ts.replica.get_task(tc_task.get_uuid()).unwrap().unwrap();
         assert_eq!(tc_task.get_priority(), "H");
         assert!(tc_task.get_value("tag_next").is_none());
         assert_eq!(task, tc_task);
+    }
+
+    #[test]
+    fn test_new_task() {
+        let replica = create_mem_replica();
+        let task = ObsidianTaskBuilder::new()
+            .description("Test")
+            .priority(Priority::High)
+            .build();
+
+        let mut ts = TaskWarriorSync::from_replica(replica);
+        let result = ts.md_to_tc(&task, "").unwrap();
+        assert!(result);
+
+        assert_eq!(ts.replica.all_task_uuids().unwrap().len(), 1);
+        let uuid = ts.replica.all_task_uuids().unwrap().pop().unwrap();
+        let reference_task = ObsidianTask {
+            uuid: Some(uuid.clone()),
+            ..task
+        };
+        let result_task = ts.replica.get_task(uuid).unwrap().unwrap();
+        assert_eq!(reference_task, result_task);
     }
 }

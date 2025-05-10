@@ -17,7 +17,9 @@ mod testutil;
 fn main() -> Result<()> {
     
     let cfg = config::get(); 
-
+    
+    Ok(())
+    /*
     // 1. Find all md files in vault
     let md_types = TypesBuilder::new().add_defaults().select("markdown").build().expect("Failed to build type matcher");
     let paths: Vec<ignore::DirEntry> = WalkBuilder::new(cfg.vault_path).types(md_types)
@@ -36,4 +38,5 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+    */
 }

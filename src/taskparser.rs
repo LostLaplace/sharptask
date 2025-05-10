@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, offset::LocalResult};
 use regex::Regex;
-use std::fmt;
+use std::fmt::{self, Display};
 use std::iter::Peekable;
 use std::{str::FromStr, string::String};
 use taskchampion::{Task, Uuid};
@@ -46,7 +46,17 @@ impl Default for Status {
     }
 }
 
-#[derive(Debug, PartialEq)]
+impl Display for Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Status::Pending => return write!(f, "[ ]"),
+            Status::Complete => return write!(f, "[x]"),
+            Status::Canceled => return write!(f, "[-]")
+        };
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Priority {
     Lowest,
     Low,
@@ -62,14 +72,16 @@ impl Default for Priority {
     }
 }
 
-impl fmt::Display for Priority {
+impl Display for Priority {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Lowest | Self::Low => return write!(f, "L"),
-            Self::Normal => return write!(f, ""),
-            Self::Medium => return write!(f, "M"),
-            Self::High | Self::Highest => return write!(f, "H"),
-        }
+            Priority::Lowest => return write!(f, "⏬"),
+            Priority::Low => return write!(f, "🔽"),
+            Priority::Normal => return write!(f, ""),
+            Priority::Medium => return write!(f, "🔼"),
+            Priority::High => return write!(f, "⏫"),
+            Priority::Highest => return write!(f, "🔺"),
+        };
     }
 }
 
@@ -78,7 +90,7 @@ const SIGNIFICANT_EMOJI: &[&str] = &[
     &"⛔", &"🔨",
 ];
 
-#[derive(Default, Debug, PartialEq)]
+#[derive(Default, Debug, PartialEq, Eq, Clone)]
 pub struct ObsidianTask {
     pub uuid: Option<Uuid>,
     pub status: Status,
@@ -110,7 +122,7 @@ macro_rules! compare_date_fn {
         }
     };
 }
-//TODO: write helper functions for each field and then implement PartialEq
+
 impl ObsidianTask {
     compare_date_fn!(compare_due, due, "due");
     compare_date_fn!(compare_schedule, scheduled, "scheduled");
@@ -163,12 +175,53 @@ impl ObsidianTask {
                 .contains(&String::from("next"));
         }
         let tc_priority = other.get_value("priority").unwrap_or("");
-        self.priority.to_string() == tc_priority
+        match self.priority {
+            Priority::Lowest | Priority::Low => return tc_priority == "L",
+            Priority::Normal => return tc_priority == "",
+            Priority::Medium => return tc_priority == "M",
+            Priority::High | Priority::Highest => return tc_priority == "H"
+        };
     }
 
     pub fn compare_project(&self, other: &taskchampion::Task) -> bool {
         let tc_project = other.get_value("project");
         self.project == tc_project.map(|prj| prj.to_string())
+    }
+}
+
+impl Display for ObsidianTask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut task = String::new();
+        task.push_str(&format!("- {} {}", self.status, self.description));
+        if let Some(project) = &self.project {
+            task.push_str(&format!(" 🔨 {}", project));
+        }
+        if let Some(due) = self.due {
+            task.push_str(&format!(" 📅 {}", due.format("%Y-%m-%d")));
+        }
+        if let Some(scheduled) = self.scheduled {
+            task.push_str(&format!(" ⏳ {}", scheduled.format("%Y-%m-%d")));
+        }
+        if let Some(start) = self.start {
+            task.push_str(&format!(" 🛫 {}", start.format("%Y-%m-%d")));
+        }
+        if let Some(created) = self.created {
+            task.push_str(&format!(" ➕ {}", created.format("%Y-%m-%d")));
+        }
+        if let Some(done) = self.done {
+            task.push_str(&format!(" ✅ {}", done.format("%Y-%m-%d")));
+        }
+        if let Some(canceled) = self.canceled {
+            task.push_str(&format!(" ❌ {}", canceled.format("%Y-%m-%d")));
+        }
+        if self.priority != Priority::Normal {
+            task.push_str(&format!(" {}", self.priority.to_string()));
+        }
+        if let Some(uuid) = self.uuid {
+            task.push_str(&format!(" [[{}|⚔️]]", uuid));
+        }
+        
+        write!(f, "{task}")
     }
 }
 
@@ -705,5 +758,18 @@ mod tests {
         assert!(task.compare_project(&tc_task));
         assert!(task.compare_priority(&tc_task));
         assert_eq!(task, tc_task);
+    }
+
+    #[test]
+    fn test_task_display() {
+        let task = ObsidianTaskBuilder::new()
+            .uuid(Uuid::from_str("25287dfa-c5b5-4772-8788-d64a41abf352").unwrap())
+            .description("Test")
+            .priority(Priority::High)
+            .project("Test project")
+            .due("2025-05-10")
+            .build();
+
+        assert_eq!(task.to_string(), "- [ ] Test 🔨 Test project 📅 2025-05-10 ⏫ [[25287dfa-c5b5-4772-8788-d64a41abf352|⚔️]]");
     }
 }
