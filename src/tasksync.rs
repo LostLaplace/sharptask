@@ -1,5 +1,7 @@
-use anyhow::{anyhow, Context, Result};
-use chrono::NaiveTime;
+use anyhow::{Context, Result, anyhow};
+use chrono::{NaiveTime, Utc};
+use std::fs;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use taskchampion::storage::AccessMode;
 use taskchampion::{Replica, StorageConfig, Uuid};
@@ -36,7 +38,12 @@ impl TaskWarriorSync {
 
     // Updates any taskchampion copies of the task to match the markdown representation
     // Returns true if the markdown should be updated, false if no further changes needed
-    pub fn md_to_tc<T: AsRef<Path>>(&mut self, task: &ObsidianTask, file: T) -> Result<bool> {
+    pub fn md_to_tc<T: AsRef<Path>>(
+        &mut self,
+        task: &ObsidianTask,
+        file: T,
+        vault_path: Option<T>,
+    ) -> Result<bool> {
         // 1. If task has UUID, find it in TC DB
         let mut ops = taskchampion::Operations::new();
 
@@ -221,15 +228,75 @@ impl TaskWarriorSync {
                 tc_task.set_value(tag_str, Some("".to_string()), &mut ops)?;
             }
 
-            self.replica.commit_operations(ops).context("Failed to commit operations")?;
+            if let Some(file_name) = file.as_ref().file_stem() {
+                if let Some(vault) = vault_path {
+                    if let Some(vault_name) = vault.as_ref().file_name() {
+                        let timestamp = Utc::now().timestamp();
+                        let annotation = String::from(format!("annotation_{timestamp}"));
+                        let task_open = String::from(format!(
+                            "obsidian://open?vault={}&file={}",
+                            vault_name.to_str().unwrap(),
+                            file_name.to_str().unwrap()
+                        ));
+                        tc_task.set_value(annotation, Some(task_open), &mut ops)?;
+                    }
+                }
+            }
 
-            return Ok(true)
+            self.replica
+                .commit_operations(ops)
+                .context("Failed to commit operations")?;
+
+            return Ok(true);
         }
     }
 }
 
+pub struct UpdateContext {
+    line: usize,
+    task: ObsidianTask,
+}
+
+pub fn update_obsidian_tasks<T: AsRef<Path>>(path: T, updates: &[UpdateContext]) -> Result<()> {
+    // If temp file already exists, delete it
+    let temp_path = path.as_ref().with_extension(".temp");
+    if temp_path.exists() {
+        fs::remove_file(&temp_path)?;
+    }
+
+    // Read file into memory
+    let file_string = fs::read_to_string(&path)?;
+    let mut file_lines: Vec<&str> = file_string.lines().collect();
+
+    // Iterate through updates and replace those lines
+    let mut tasks = Vec::with_capacity(updates.len());
+    for update in updates {
+        let trimmed = file_lines[update.line].trim_start();
+        let whitespace_len = file_lines[update.line].len() - trimmed.len();
+        let whitespace = &file_lines[update.line][0..whitespace_len];
+        tasks.push(format!("{}{}", whitespace, update.task.to_string()));
+    }
+    for (index, update) in updates.iter().enumerate() {
+        file_lines[update.line] = &tasks[index];
+    }
+
+    // Write to temp file
+    let mut buf_writer = BufWriter::new(std::fs::File::create(&temp_path)?);
+    for line in file_lines {
+        buf_writer.write(line.as_bytes())?;
+        write!(buf_writer, "\n")?;
+    }
+
+    // Delete original, rename temp
+    fs::remove_file(&path)?;
+    fs::rename(&temp_path, &path)?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
     use std::str::FromStr;
 
     use taskchampion::{Operations, Status, Task, Uuid};
@@ -237,8 +304,44 @@ mod tests {
     use crate::taskparser::Priority;
     use crate::testutil::{self, TaskBuilder, TestContext, create_mem_replica};
     use std::path::Path;
+    use testfile::TestFile;
 
     use super::*;
+
+    #[test]
+    fn test_file_update() {
+        std::fs::remove_file("test.md");
+        let mut test_file = std::fs::File::create_new("test.md").unwrap();
+        writeln!(test_file, "This is a normal line");
+        writeln!(test_file, "- [ ] This is a test");
+        writeln!(test_file, "Another normal line");
+        writeln!(test_file, "    - [ ] This is a second test");
+
+        let obsidian_task = ObsidianTaskBuilder::new()
+            .description("This is a passed test")
+            .status(taskparser::Status::Complete)
+            .build();
+
+        let context = vec![
+            UpdateContext {
+                line: 1,
+                task: obsidian_task.clone(),
+            },
+            UpdateContext {
+                line: 3,
+                task: obsidian_task.clone(),
+            },
+        ];
+
+        assert!(update_obsidian_tasks("test.md", &context).is_ok());
+
+        let updated_content = std::fs::read_to_string("test.md").unwrap();
+        assert_eq!(
+            updated_content,
+            "This is a normal line\n- [x] This is a passed test\nAnother normal line\n    - [x] This is a passed test\n"
+        );
+        std::fs::remove_file("test.md");
+    }
 
     #[test]
     fn test_update_due_date() {
@@ -259,7 +362,7 @@ mod tests {
             .priority(Priority::Normal)
             .build();
 
-        let result = ts.md_to_tc(&obs_task, "").unwrap();
+        let result = ts.md_to_tc(&obs_task, "", None).unwrap();
         assert!(!result);
 
         tc_task = ts.replica.get_task(tc_task.get_uuid()).unwrap().unwrap();
@@ -283,7 +386,7 @@ mod tests {
 
         let mut ts = TaskWarriorSync::from_replica(replica);
 
-        let result = ts.md_to_tc(&mut task, "").unwrap();
+        let result = ts.md_to_tc(&mut task, "", None).unwrap();
         assert!(!result);
 
         tc_task = ts.replica.get_task(tc_task.get_uuid()).unwrap().unwrap();
@@ -308,7 +411,7 @@ mod tests {
 
         let mut ts = TaskWarriorSync::from_replica(replica);
 
-        let result = ts.md_to_tc(&mut task, "").unwrap();
+        let result = ts.md_to_tc(&mut task, "", None).unwrap();
         assert!(!result);
 
         tc_task = ts.replica.get_task(tc_task.get_uuid()).unwrap().unwrap();
@@ -335,7 +438,7 @@ mod tests {
 
         let mut ts = TaskWarriorSync::from_replica(replica);
 
-        let result = ts.md_to_tc(&mut task, "").unwrap();
+        let result = ts.md_to_tc(&mut task, "", None).unwrap();
         assert!(!result);
 
         tc_task = ts.replica.get_task(tc_task.get_uuid()).unwrap().unwrap();
@@ -353,7 +456,7 @@ mod tests {
             .build();
 
         let mut ts = TaskWarriorSync::from_replica(replica);
-        let result = ts.md_to_tc(&task, "").unwrap();
+        let result = ts.md_to_tc(&task, "test1.md", Some("/test2")).unwrap();
         assert!(result);
 
         assert_eq!(ts.replica.all_task_uuids().unwrap().len(), 1);
@@ -364,5 +467,16 @@ mod tests {
         };
         let result_task = ts.replica.get_task(uuid).unwrap().unwrap();
         assert_eq!(reference_task, result_task);
+        let task_data = result_task.into_task_data();
+        let annotation = task_data
+            .iter()
+            .find_map(|x| {
+                if x.0.starts_with("annotation") {
+                    return Some(x.1);
+                }
+                None
+            })
+            .unwrap();
+        assert_eq!("obsidian://open?vault=test2&file=test1", annotation);
     }
 }

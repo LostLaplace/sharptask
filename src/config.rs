@@ -1,10 +1,10 @@
-use std::{path::PathBuf, str::FromStr};
-use std::fs;
+use anyhow::{Result, anyhow};
 use chrono_tz::Tz;
-use serde::Deserialize;
-use anyhow::{anyhow, Result};
-use std::path::Path;
 use clap::{Args, Parser, Subcommand};
+use serde::Deserialize;
+use std::fs;
+use std::path::Path;
+use std::{path::PathBuf, str::FromStr};
 
 #[derive(Debug)]
 pub struct Config {
@@ -31,7 +31,6 @@ impl Default for ConfigFile {
     }
 }
 
-
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -45,14 +44,14 @@ struct Cli {
     dir: Direction,
 }
 
-#[derive(Subcommand, Debug)]
-enum Direction {
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+pub enum Direction {
     MdToTc,
-    TcToMd
+    TcToMd,
 }
 
 #[derive(Args, Debug)]
-#[group(required=false, multiple=false)]
+#[group(required = false, multiple = false)]
 struct Target {
     #[arg(short, long)]
     vault: Option<PathBuf>,
@@ -68,39 +67,41 @@ pub fn get() -> Config {
     // the default config file if not
     let parsed_config = match cli.config {
         Some(config_path) => parse(&config_path),
-        None => parse(DEFAULT_PATH)
-    }.unwrap_or(ConfigFile::default());
+        None => parse(DEFAULT_PATH),
+    }
+    .unwrap_or(ConfigFile::default());
 
     // The user can override a few of the options via CLI flags,
-    // ensure that these items are either defined in the config or 
+    // ensure that these items are either defined in the config or
     // via CLI
-    let vault_path = cli.target.vault.or(parsed_config.vault_path)
-        .map(|path| {
-            let path_str = path.to_string_lossy();
-            let expanded = shellexpand::tilde(&path_str);
-            PathBuf::from(expanded.into_owned())
-        });
+    let vault_path = cli.target.vault.or(parsed_config.vault_path).map(|path| {
+        let path_str = path.to_string_lossy();
+        let expanded = shellexpand::tilde(&path_str);
+        PathBuf::from(expanded.into_owned())
+    });
 
-    let task_path = cli.task_db.or(parsed_config.task_path)
+    let task_path = cli
+        .task_db
+        .or(parsed_config.task_path)
         .map(|path| {
             let path_str = path.to_string_lossy();
             let expanded = shellexpand::tilde(&path_str);
             PathBuf::from(expanded.into_owned())
-        }).expect("Task DB path must be provided via --task_db or config");
+        })
+        .expect("Task DB path must be provided via --task_db or config");
 
     Config {
         vault_path,
         task_path,
         file_path: cli.target.file,
-        direction: cli.dir
+        direction: cli.dir,
     }
 }
 
 fn parse<P: AsRef<Path>>(config_path: P) -> Result<ConfigFile> {
-    let contents = fs::read_to_string(&config_path)
-        .map_err(|e| anyhow!("Cannot read config file: {}", e))?;
-    let config: ConfigFile = toml::from_str(&contents)
-        .map_err(|_| anyhow!("Cannot parse TOML"))?;
+    let contents =
+        fs::read_to_string(&config_path).map_err(|e| anyhow!("Cannot read config file: {}", e))?;
+    let config: ConfigFile = toml::from_str(&contents).map_err(|_| anyhow!("Cannot parse TOML"))?;
     Ok(config)
 }
 
