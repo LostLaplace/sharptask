@@ -6,7 +6,7 @@ use ignore::{WalkBuilder, types::TypesBuilder};
 //use regex::Regex;
 use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
-use tasksync::TaskWarriorSync;
+use tasksync::{TaskWarriorSync, UpdateContext, update_obsidian_tasks};
 
 mod config;
 mod taskparser;
@@ -26,32 +26,43 @@ fn main() -> Result<()> {
     }
 
     for path in paths {
+        println!("{}", format!("Processing: {}", &path.display()).blue());
         let task_matcher = RegexMatcher::new_line_matcher(r"- \[ |-|x\] .*")
             .expect("Failed to build regex matcher");
         let mut lines = Vec::new();
         let sink = sinks::UTF8(|offset, text| {
-            lines.push((offset, text.to_string()));
+            let task_option = taskparser::parse(text.to_string());
+            if let Some(task) = task_option {
+                match task.uuid {
+                    Some(_) => println!("  {}", format!("{}", task.to_string()).blue()),
+                    None => println!("  {}", format!("{}", task.to_string()).green()),
+                }
+                lines.push(UpdateContext {
+                    line: usize::try_from(offset - 1).expect("Offset should fit"),
+                    task,
+                });
+            } else {
+                println!("  {}", format!("{} {}", "Failed to parse:", text).red());
+            }
             Ok(true)
         });
         Searcher::new()
             .search_path(task_matcher, path.clone(), sink)
             .context("Failed during search")?;
 
-        let file = File::options().write(true).open(&path)?;
-        let mut buf_writer = BufWriter::new(file);
-
-        for line in lines {
-            if cfg.direction == config::Direction::MdToTc {
-                if let Some(task) = taskparser::parse(line.1) {
-                    let mut ts = TaskWarriorSync::new(&cfg.task_path)?;
-                    let update = ts.md_to_tc(&task, path.clone(), cfg.vault_path.clone());
-                    if update.is_ok() && update.unwrap() {
-                        let new_task = task.to_string();
-                    }
+        if cfg.direction == config::Direction::MdToTc {
+            let mut updates = Vec::new();
+            for line in lines.iter_mut() {
+                let mut sync = TaskWarriorSync::new(&cfg.task_path)
+                    .context("Failed to open task database")
+                    .expect("Should be able to access task database");
+                let update = sync.md_to_tc(&mut line.task, path.clone(), cfg.vault_path.clone());
+                if update.is_ok() && update.unwrap() {
+                    updates.push(line.clone());
                 }
-            } else {
-                // TODO: handle TcToMd case
             }
+
+            let result = update_obsidian_tasks(&path, &updates);
         }
     }
 

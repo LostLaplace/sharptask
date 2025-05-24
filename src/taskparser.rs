@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, offset::LocalResult};
+use colored::Colorize;
 use regex::Regex;
 use std::fmt::{self, Display};
 use std::iter::Peekable;
@@ -51,7 +52,7 @@ impl Display for Status {
         match self {
             Status::Pending => return write!(f, "[ ]"),
             Status::Complete => return write!(f, "[x]"),
-            Status::Canceled => return write!(f, "[-]")
+            Status::Canceled => return write!(f, "[-]"),
         };
     }
 }
@@ -104,6 +105,7 @@ pub struct ObsidianTask {
     pub canceled: Option<NaiveDate>,
     pub priority: Priority,
     pub project: Option<String>,
+    tz: chrono_tz::Tz,
 }
 
 const MIDNIGHT: chrono::NaiveTime = chrono::NaiveTime::from_hms(0, 0, 0);
@@ -111,9 +113,13 @@ const MIDNIGHT: chrono::NaiveTime = chrono::NaiveTime::from_hms(0, 0, 0);
 macro_rules! compare_date_fn {
     ($name:ident, $taskParam:tt, $tcData:tt) => {
         pub fn $name(&self, other: &taskchampion::Task) -> bool {
-            let task_date = self
-                .$taskParam
-                .map(|ts| ts.and_time(MIDNIGHT).and_utc().timestamp());
+            let task_date = self.$taskParam.map(|ts| {
+                ts.and_time(MIDNIGHT)
+                    .and_local_timezone(self.tz)
+                    .unwrap()
+                    .to_utc()
+                    .timestamp()
+            });
             let tc_date = other
                 .get_value($tcData)
                 .map(|ts| ts.parse::<i64>().ok())
@@ -179,7 +185,7 @@ impl ObsidianTask {
             Priority::Lowest | Priority::Low => return tc_priority == "L",
             Priority::Normal => return tc_priority == "",
             Priority::Medium => return tc_priority == "M",
-            Priority::High | Priority::Highest => return tc_priority == "H"
+            Priority::High | Priority::Highest => return tc_priority == "H",
         };
     }
 
@@ -218,9 +224,9 @@ impl Display for ObsidianTask {
             task.push_str(&format!(" {}", self.priority.to_string()));
         }
         if let Some(uuid) = self.uuid {
-            task.push_str(&format!(" [[{}|⚔️]]", uuid));
+            task.push_str(&format!(" [[uuid: {}|⚔]]", uuid));
         }
-        
+
         write!(f, "{task}")
     }
 }
@@ -398,6 +404,13 @@ impl Iterator for MetadataParser<'_> {
 pub fn parse(mut task_string: String) -> Option<ObsidianTask> {
     let mut task = ObsidianTask::default();
 
+    let tz: chrono_tz::Tz = localzone::get_local_zone()
+        .unwrap_or(String::from("UTC"))
+        .parse()
+        .unwrap_or(chrono_tz::UTC);
+
+    task.tz = tz;
+
     let status = parse_preamble(&mut task_string);
     task.status = status?;
 
@@ -433,7 +446,7 @@ pub fn parse(mut task_string: String) -> Option<ObsidianTask> {
 fn extract_task_parts(task: &mut String) -> (Option<String>, Option<Result<Uuid>>) {
     // Returns a tuple with the metadata string and UUID as options
     let mut uuid: Option<Result<Uuid>> = None;
-    let uuid_re = Regex::new(r"(?<whole>\[\[uuid: (?<uuid>.*)\|⚔️\]\])").unwrap();
+    let uuid_re = Regex::new(r"(?<whole>\[\[uuid: (?<uuid>.*)\|⚔\]\])").unwrap();
     if let Some(caps) = uuid_re.captures(task) {
         uuid = caps.name("uuid").map(|id| {
             Uuid::parse_str(id.as_str())
@@ -463,7 +476,7 @@ fn extract_task_parts(task: &mut String) -> (Option<String>, Option<Result<Uuid>
 
 fn parse_preamble(task_string: &mut String) -> Option<Status> {
     // Remove the preamble: - [ ]
-    let preamble_re = Regex::new(r"^\s*- \[(?<status>[x\- ])\] (?<remaining>.*)$").unwrap();
+    let preamble_re = Regex::new(r"\s*- \[(?<status>[x\- ])\] (?<remaining>.*)").unwrap();
     let caps = preamble_re.captures(task_string)?;
     let status = match caps.name("status")?.as_str() {
         "x" => Status::Complete,
@@ -496,7 +509,7 @@ mod tests {
     use chrono_tz::America;
     use testfile::create;
 
-    use crate::testutil::{create_mem_replica, TaskBuilder, TestContext};
+    use crate::testutil::{TaskBuilder, TestContext, create_mem_replica};
 
     use super::*;
 
@@ -534,33 +547,30 @@ mod tests {
                 ),
             ),
             (
-                "- [ ] Task with existing uuid [[uuid: a80c42ce-dd29-4dc7-8582-34f36fcf8b80|⚔️]]",
+                "- [ ] Task with existing uuid [[uuid: a80c42ce-dd29-4dc7-8582-34f36fcf8b80|⚔]]",
                 Some(
                     ObsidianTaskBuilder::new()
                         .uuid(Uuid::parse_str("a80c42ce-dd29-4dc7-8582-34f36fcf8b80").unwrap())
                         .description("Task with existing uuid")
-                        .build()
-                )
+                        .build(),
+                ),
             ),
             (
-                "- [ ] Task with invalid uuid [[uuid: uh-oh|⚔️]]",
+                "- [ ] Task with invalid uuid [[uuid: uh-oh|⚔]]",
                 Some(
                     ObsidianTaskBuilder::new()
                         .description("Task with invalid uuid")
-                        .build()
-                )
+                        .build(),
+                ),
             ),
             (
                 "- [ ] Task with #some/tags",
                 Some(
                     ObsidianTaskBuilder::new()
                         .description("Task with #some/tags")
-                        .tags(&[
-                            "some",
-                            "tags"
-                        ])
-                        .build()
-                )
+                        .tags(&["some", "tags"])
+                        .build(),
+                ),
             ),
             (
                 " - [-] Task with a project 🔨 Project text 🙂",
@@ -569,11 +579,11 @@ mod tests {
                         .status(Status::Canceled)
                         .description("Task with a project")
                         .project("Project text 🙂")
-                        .build()
-                )
+                        .build(),
+                ),
             ),
             (
-                "- [ ] Test task stuff 📅 2025-05-19 ⏳ 2025-05-20 🛫 2025-05-21 ➕ 2025-05-22 ✅ 2025-05-23 ❌ 2025-05-24 [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔️]]",
+                "- [ ] Test task stuff 📅 2025-05-19 ⏳ 2025-05-20 🛫 2025-05-21 ➕ 2025-05-22 ✅ 2025-05-23 ❌ 2025-05-24 [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔]]",
                 Some(
                     ObsidianTaskBuilder::new()
                         .description("Test task stuff")
@@ -584,8 +594,8 @@ mod tests {
                         .done("2025-05-23")
                         .canceled("2025-05-24")
                         .uuid(Uuid::parse_str("96bb3816-aedd-4033-8ff6-4746a700aac8").unwrap())
-                        .build()
-                )
+                        .build(),
+                ),
             ),
         ];
 
@@ -599,7 +609,7 @@ mod tests {
     #[test]
     fn test_priority() {
         let mut task = String::from(
-            "Test task stuff 🔺⏫🔼🔽⏬️ [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔️]]",
+            "Test task stuff 🔺⏫🔼🔽⏬️ [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔]]",
         );
         let (metadata, uuid) = extract_task_parts(&mut task);
         assert_eq!(metadata.clone().unwrap(), "🔺⏫🔼🔽⏬️");
@@ -636,7 +646,7 @@ mod tests {
     #[test]
     fn test_all() {
         let mut task = String::from(
-            "Test #task stuff #project/tag 📅 2025-05-19 ⏳ 2025-05-19 🛫 2025-05-19 ➕ 2025-05-19 ✅ 2025-05-19 ❌ 2025-05-19 🔨 This is a project 🔺⏫🔼🔽⏬️ [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔️]]",
+            "Test #task stuff #project/tag 📅 2025-05-19 ⏳ 2025-05-19 🛫 2025-05-19 ➕ 2025-05-19 ✅ 2025-05-19 ❌ 2025-05-19 🔨 This is a project 🔺⏫🔼🔽⏬️ [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔]]",
         );
         let (metadata, uuid) = extract_task_parts(&mut task);
         assert_eq!(
@@ -710,7 +720,7 @@ mod tests {
     #[test]
     fn test_date_parse_fail() {
         let mut task =
-            String::from("Test task stuff 📅25 [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔️]]");
+            String::from("Test task stuff 📅25 [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔]]");
         let (metadata, _) = extract_task_parts(&mut task);
         let metadata_str = metadata.clone().unwrap();
         let mut metadata_iter = MetadataParser::new(&metadata_str);
@@ -726,11 +736,7 @@ mod tests {
             .desc("This is a test")
             .scheduled("2025-06-01")
             .due("2025-06-02")
-            .tags(&[
-                "test",
-                "test2",
-                "next",
-            ])
+            .tags(&["test", "test2", "next"])
             .priority("H")
             .project("Test project")
             .build();
@@ -740,15 +746,11 @@ mod tests {
             .description("This is a test")
             .due("2025-06-02")
             .scheduled("2025-06-01")
-            .tags(&[
-                "test",
-                "test2",
-                "next"
-            ])
+            .tags(&["test", "test2", "next"])
             .project("Test project")
             .priority(Priority::Highest)
             .build();
-        
+
         assert!(task.compare_uuid(&tc_task));
         assert!(task.compare_description(&tc_task));
         assert!(task.compare_status(&tc_task));
@@ -770,6 +772,9 @@ mod tests {
             .due("2025-05-10")
             .build();
 
-        assert_eq!(task.to_string(), "- [ ] Test 🔨 Test project 📅 2025-05-10 ⏫ [[25287dfa-c5b5-4772-8788-d64a41abf352|⚔️]]");
+        assert_eq!(
+            task.to_string(),
+            "- [ ] Test 🔨 Test project 📅 2025-05-10 ⏫ [[uuid: 25287dfa-c5b5-4772-8788-d64a41abf352|⚔]]"
+        );
     }
 }

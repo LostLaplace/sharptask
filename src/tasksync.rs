@@ -10,6 +10,7 @@ use crate::taskparser::{self, ObsidianTask, ObsidianTaskBuilder};
 
 pub struct TaskWarriorSync {
     replica: Replica,
+    tz: chrono_tz::Tz,
 }
 
 impl TaskWarriorSync {
@@ -21,14 +22,23 @@ impl TaskWarriorSync {
         }
         .into_storage()
         .context("Failed to build storage context")?;
+        let tz: chrono_tz::Tz = localzone::get_local_zone()
+            .unwrap_or(String::from("UTC"))
+            .parse()
+            .unwrap_or(chrono_tz::UTC);
         Ok(TaskWarriorSync {
             replica: Replica::new(storage),
+            tz,
         })
     }
 
     #[cfg(test)]
     fn from_replica(replica: Replica) -> Self {
-        TaskWarriorSync { replica }
+        let tz: chrono_tz::Tz = localzone::get_local_zone()
+            .unwrap_or(String::from("UTC"))
+            .parse()
+            .unwrap_or(chrono_tz::UTC);
+        TaskWarriorSync { replica, tz }
     }
 
     #[cfg(test)]
@@ -40,7 +50,7 @@ impl TaskWarriorSync {
     // Returns true if the markdown should be updated, false if no further changes needed
     pub fn md_to_tc<T: AsRef<Path>>(
         &mut self,
-        task: &ObsidianTask,
+        task: &mut ObsidianTask,
         file: T,
         vault_path: Option<T>,
     ) -> Result<bool> {
@@ -69,7 +79,12 @@ impl TaskWarriorSync {
                 // Due date update
                 if !task.compare_due(&tc_task) {
                     tc_task.set_due(
-                        task.due.map(|date| date.and_time(MIDNIGHT).and_utc()),
+                        task.due.map(|date| {
+                            date.and_time(MIDNIGHT)
+                                .and_local_timezone(self.tz)
+                                .unwrap()
+                                .to_utc()
+                        }),
                         &mut ops,
                     )?;
                 }
@@ -77,7 +92,12 @@ impl TaskWarriorSync {
                 // Wait date update
                 if !task.compare_start(&tc_task) {
                     tc_task.set_wait(
-                        task.start.map(|date| date.and_time(MIDNIGHT).and_utc()),
+                        task.start.map(|date| {
+                            date.and_time(MIDNIGHT)
+                                .and_local_timezone(self.tz)
+                                .unwrap()
+                                .to_utc()
+                        }),
                         &mut ops,
                     )?;
                 }
@@ -110,8 +130,14 @@ impl TaskWarriorSync {
                 if task.status == taskparser::Status::Complete && !task.compare_done(&tc_task) {
                     tc_task.set_value(
                         "end",
-                        task.done
-                            .map(|ed| ed.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                        task.done.map(|ed| {
+                            ed.and_time(MIDNIGHT)
+                                .and_local_timezone(self.tz)
+                                .unwrap()
+                                .to_utc()
+                                .timestamp()
+                                .to_string()
+                        }),
                         &mut ops,
                     )?;
                 }
@@ -119,8 +145,14 @@ impl TaskWarriorSync {
                 if task.status == taskparser::Status::Canceled && !task.compare_canceled(&tc_task) {
                     tc_task.set_value(
                         "end",
-                        task.canceled
-                            .map(|ed| ed.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                        task.canceled.map(|ed| {
+                            ed.and_time(MIDNIGHT)
+                                .and_local_timezone(self.tz)
+                                .unwrap()
+                                .to_utc()
+                                .timestamp()
+                                .to_string()
+                        }),
                         &mut ops,
                     )?;
                 }
@@ -129,8 +161,14 @@ impl TaskWarriorSync {
                 if !task.compare_schedule(&tc_task) {
                     tc_task.set_value(
                         "scheduled",
-                        task.scheduled
-                            .map(|ed| ed.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                        task.scheduled.map(|ed| {
+                            ed.and_time(MIDNIGHT)
+                                .and_local_timezone(self.tz)
+                                .unwrap()
+                                .to_utc()
+                                .timestamp()
+                                .to_string()
+                        }),
                         &mut ops,
                     )?;
                 }
@@ -170,43 +208,80 @@ impl TaskWarriorSync {
             // Generate UUID and create task
             const MIDNIGHT: NaiveTime = NaiveTime::from_hms(0, 0, 0);
             let uuid = Uuid::new_v4();
+            task.uuid = Some(uuid);
             let mut tc_task = self.replica.create_task(uuid, &mut ops)?;
             tc_task.set_status(task.status.clone().into(), &mut ops)?;
             tc_task.set_description(task.description.clone(), &mut ops)?;
             tc_task.set_value(
                 "due",
-                task.due
-                    .map(|x| x.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                task.due.map(|x| {
+                    x.and_time(MIDNIGHT)
+                        .and_local_timezone(self.tz)
+                        .unwrap()
+                        .to_utc()
+                        .timestamp()
+                        .to_string()
+                }),
                 &mut ops,
             )?;
             tc_task.set_value(
                 "wait",
-                task.start
-                    .map(|x| x.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                task.start.map(|x| {
+                    x.and_time(MIDNIGHT)
+                        .and_local_timezone(self.tz)
+                        .unwrap()
+                        .to_utc()
+                        .timestamp()
+                        .to_string()
+                }),
                 &mut ops,
             )?;
             tc_task.set_value(
                 "scheduled",
-                task.scheduled
-                    .map(|x| x.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                task.scheduled.map(|x| {
+                    x.and_time(MIDNIGHT)
+                        .and_local_timezone(self.tz)
+                        .unwrap()
+                        .to_utc()
+                        .timestamp()
+                        .to_string()
+                }),
                 &mut ops,
             )?;
             tc_task.set_value(
                 "created",
-                task.created
-                    .map(|x| x.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                task.created.map(|x| {
+                    x.and_time(MIDNIGHT)
+                        .and_local_timezone(self.tz)
+                        .unwrap()
+                        .to_utc()
+                        .timestamp()
+                        .to_string()
+                }),
                 &mut ops,
             )?;
             tc_task.set_value(
                 "end",
-                task.done
-                    .map(|x| x.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                task.done.map(|x| {
+                    x.and_time(MIDNIGHT)
+                        .and_local_timezone(self.tz)
+                        .unwrap()
+                        .to_utc()
+                        .timestamp()
+                        .to_string()
+                }),
                 &mut ops,
             )?;
             tc_task.set_value(
                 "end",
-                task.canceled
-                    .map(|x| x.and_time(MIDNIGHT).and_utc().timestamp().to_string()),
+                task.canceled.map(|x| {
+                    x.and_time(MIDNIGHT)
+                        .and_local_timezone(self.tz)
+                        .unwrap()
+                        .to_utc()
+                        .timestamp()
+                        .to_string()
+                }),
                 &mut ops,
             )?;
 
@@ -252,9 +327,10 @@ impl TaskWarriorSync {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct UpdateContext {
-    line: usize,
-    task: ObsidianTask,
+    pub line: usize,
+    pub task: ObsidianTask,
 }
 
 pub fn update_obsidian_tasks<T: AsRef<Path>>(path: T, updates: &[UpdateContext]) -> Result<()> {
@@ -271,6 +347,7 @@ pub fn update_obsidian_tasks<T: AsRef<Path>>(path: T, updates: &[UpdateContext])
     // Iterate through updates and replace those lines
     let mut tasks = Vec::with_capacity(updates.len());
     for update in updates {
+        println!("{:?}", file_lines);
         let trimmed = file_lines[update.line].trim_start();
         let whitespace_len = file_lines[update.line].len() - trimmed.len();
         let whitespace = &file_lines[update.line][0..whitespace_len];
@@ -354,7 +431,7 @@ mod tests {
 
         let mut ts = TaskWarriorSync::from_replica(replica);
 
-        let obs_task = ObsidianTaskBuilder::new()
+        let mut obs_task = ObsidianTaskBuilder::new()
             .uuid(tc_task.get_uuid())
             .description("Test task")
             .due("2025-05-28")
@@ -362,7 +439,7 @@ mod tests {
             .priority(Priority::Normal)
             .build();
 
-        let result = ts.md_to_tc(&obs_task, "", None).unwrap();
+        let result = ts.md_to_tc(&mut obs_task, "", None).unwrap();
         assert!(!result);
 
         tc_task = ts.replica.get_task(tc_task.get_uuid()).unwrap().unwrap();
@@ -450,13 +527,13 @@ mod tests {
     #[test]
     fn test_new_task() {
         let replica = create_mem_replica();
-        let task = ObsidianTaskBuilder::new()
+        let mut task = ObsidianTaskBuilder::new()
             .description("Test")
             .priority(Priority::High)
             .build();
 
         let mut ts = TaskWarriorSync::from_replica(replica);
-        let result = ts.md_to_tc(&task, "test1.md", Some("/test2")).unwrap();
+        let result = ts.md_to_tc(&mut task, "test1.md", Some("/test2")).unwrap();
         assert!(result);
 
         assert_eq!(ts.replica.all_task_uuids().unwrap().len(), 1);
