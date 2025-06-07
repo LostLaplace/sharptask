@@ -48,13 +48,13 @@ Currently, sharptask supports the following Obsidian Task plugin features:
     1. 🔺 maps to priority:H and the +next tag
     2. ⏫ maps to priority:H without the +next tag
     3. 🔼 maps to priority:M
-    4. 🔽 and ⏬️both mapt to priority:L
+    4. 🔽 and ⏬️ both map to priority:L
 - Tags
     - Obsidian #tag tags are correctly mapped to TC
     - Taskwarrior does not allow '/' for tag hierarchy, so if you use hierarchical tags they will each be represented by their own individual tag in TC
     - Tags cannot contain spaces or any of these characters: !@#$%^&*(),.?":{}|<>
 - Project
-    - Projects are implemented using the 🔨emoji. The entire text is captured as the project.
+    - Projects are implemented using the 🔨 emoji. The entire text is captured as the project.
     - Hopefully we can get this added to the obsidian tasks plugin someday!
 
 ## Configuration
