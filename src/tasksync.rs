@@ -355,7 +355,7 @@ impl TaskWarriorSync {
                 .context("Failed committing operations");
         } else {
             // Generate UUID and create task
-            const MIDNIGHT: NaiveTime = NaiveTime::from_hms(0, 0, 0);
+            const MIDNIGHT: NaiveTime = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
             let uuid = Uuid::new_v4();
             task.uuid = Some(uuid);
             let mut tc_task = self.replica.create_task(uuid, &mut ops)?;

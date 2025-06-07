@@ -60,7 +60,7 @@ impl Display for Status {
 
 impl From<taskchampion::Status> for Status {
     fn from(tc_status: taskchampion::Status) -> Self {
-        match (tc_status) {
+        match tc_status {
             taskchampion::Status::Pending => return Status::Pending,
             taskchampion::Status::Completed => return Status::Complete,
             taskchampion::Status::Deleted => return Status::Canceled,
@@ -357,11 +357,13 @@ macro_rules! define_date_functions {
     ($($field:ident),*) => {
         $(
             paste! {
+                #[allow(dead_code)]
                 pub fn $field(mut self, value: Option<NaiveDate>) -> Self {
                     self.task.$field = value;
                     self
                 }
 
+                #[allow(dead_code)]
                 pub fn [<$field _str>]<S: AsRef<str>>(mut self, value: S) -> Self {
                     let dt = chrono::NaiveDate::parse_from_str(value.as_ref(), "%Y-%m-%d").unwrap();
                     self.task.$field = Some(dt);
@@ -378,6 +380,7 @@ impl ObsidianTaskBuilder {
         ObsidianTaskBuilder { task }
     }
 
+    #[allow(dead_code)]
     pub fn tz(mut self, tz: chrono_tz::Tz) -> Self {
         self.task.tz = tz;
         self
@@ -415,6 +418,7 @@ impl ObsidianTaskBuilder {
         self
     }
 
+    #[allow(dead_code)]
     pub fn project_str<T: Into<String>>(mut self, project: T) -> Self {
         self.task.project = Some(project.into());
         self

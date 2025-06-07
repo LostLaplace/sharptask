@@ -1,10 +1,9 @@
 use anyhow::{Result, anyhow};
-use chrono_tz::Tz;
 use clap::{Args, Parser, Subcommand};
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
-use std::{path::PathBuf, str::FromStr};
+use std::path::PathBuf;
 
 #[derive(Debug)]
 pub struct Config {

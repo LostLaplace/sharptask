@@ -1,9 +1,5 @@
-use std::{fs::File, io::BufWriter, path::Path, str::FromStr};
-
 use grep::{regex::RegexMatcher, searcher::Searcher, searcher::sinks};
 use ignore::{WalkBuilder, types::TypesBuilder};
-//use taskchampion::{storage::AccessMode, Operations, Replica, Status, StorageConfig, Uuid};
-//use regex::Regex;
 use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
 use tasksync::{TaskWarriorSync, UpdateContext, update_obsidian_tasks};
