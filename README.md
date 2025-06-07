@@ -90,3 +90,5 @@ Each of these can be overriden at the command line. Use `--help` to learn more.
 - [ ] Implement recurring Tasks
 - [ ] Implement dependencies
 - [ ] Automatically add nested list items in obsidian as annotations in TC
+- [ ] Write obsidian plugin to automatically invoke with md-to-tc when tasks are edited in the markdown
+- [ ] Add taskwarrior hooks to automatically invoke with tc-to-md when tasks are edited in taskwarrior
