@@ -1,7 +1,7 @@
-use grep::{regex::RegexMatcher, searcher::Searcher, searcher::sinks};
-use ignore::{WalkBuilder, types::TypesBuilder};
 use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
+use grep::{regex::RegexMatcher, searcher::Searcher, searcher::sinks};
+use ignore::{WalkBuilder, types::TypesBuilder};
 use tasksync::{TaskWarriorSync, UpdateContext, update_obsidian_tasks};
 
 mod config;

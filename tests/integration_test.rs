@@ -3,7 +3,7 @@
 mod tests {
     use std::fs;
     use std::path::PathBuf;
-    use std::process::ExitStatus;
+    
     use taskchampion::storage::AccessMode;
     use taskchampion::{self, Operations, Replica, Status};
     use test_bin;
@@ -111,7 +111,7 @@ mod tests {
         }
         .into_storage()
         .unwrap();
-        let mut replica = Replica::new(storage);
+        let replica = Replica::new(storage);
 
         sharptask.args([
             "--task-db",

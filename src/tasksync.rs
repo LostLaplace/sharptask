@@ -1,5 +1,5 @@
-use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
+use anyhow::{Context, Result};
+use chrono::{DateTime, NaiveTime, Utc};
 use colored::Colorize;
 use std::fs;
 use std::io::{BufWriter, Write};
@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use taskchampion::storage::AccessMode;
 use taskchampion::{Replica, StorageConfig, Uuid};
 
-use crate::taskparser::{self, ObsidianTask, ObsidianTaskBuilder};
+use crate::taskparser::{self, ObsidianTask};
 
 pub struct TaskWarriorSync {
     replica: Replica,
@@ -592,20 +592,20 @@ pub fn update_obsidian_tasks<T: AsRef<Path>>(path: T, updates: &[UpdateContext])
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
-    use std::str::FromStr;
+    
+    
 
-    use chrono_tz::UTC;
-    use taskchampion::{Operations, Status, Task, Uuid};
-
+    use crate::taskparser::ObsidianTaskBuilder;
     use crate::taskparser::Priority;
-    use crate::testutil::{self, TaskBuilder, TestContext, create_mem_replica};
-    use std::path::Path;
-    use testfile::TestFile;
+    use crate::testutil::{TaskBuilder, TestContext, create_mem_replica};
+    use chrono_tz::UTC;
+    
+    
+    
 
     use super::*;
 
-    use pretty_assertions::{assert_eq, assert_ne};
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn test_file_update() {

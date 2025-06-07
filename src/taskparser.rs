@@ -1,11 +1,10 @@
 use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, offset::LocalResult};
-use colored::Colorize;
+use chrono::NaiveDate;
 use paste::paste;
 use regex::Regex;
 use std::fmt::{self, Display};
 use std::iter::Peekable;
-use std::{str::FromStr, string::String};
+use std::string::String;
 use taskchampion::{Task, Uuid};
 use unicode_segmentation::{Graphemes, UnicodeSegmentation};
 
@@ -635,16 +634,16 @@ fn parse_tags(task_string: &String) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::Metadata;
 
-    use chrono_tz::America;
-    use testfile::create;
+    use chrono::TimeZone;
+
+    use std::str::FromStr;
 
     use crate::testutil::{TaskBuilder, TestContext, create_mem_replica};
 
     use super::*;
 
-    use pretty_assertions::{assert_eq, assert_ne};
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn test_task_bank() {
