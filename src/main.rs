@@ -22,9 +22,21 @@ fn main() -> Result<()> {
     if let Some(file_path) = cfg.file_path {
         paths.push(file_path);
     } else {
-        // Search vault for markdown files
+        let md_types = TypesBuilder::new()
+            .add_defaults()
+            .select("markdown")
+            .build()
+            .expect("Failed to build type matcher");
+        let walk_paths = WalkBuilder::new(cfg.vault_path.as_ref().expect("No vault set"))
+            .types(md_types)
+            .build()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_file()))
+            .map(|x| x.into_path());
+        paths.extend(walk_paths);
     }
 
+    let mut errors = 0;
     for path in paths {
         println!("{}", format!("Processing: {}", &path.display()).blue());
         let task_matcher = RegexMatcher::new_line_matcher(r"- \[ |-|x\] .*")
@@ -46,56 +58,32 @@ fn main() -> Result<()> {
             .search_path(task_matcher, path.clone(), sink)
             .context("Failed during search")?;
 
-        if cfg.direction == config::Direction::MdToTc {
-            let mut updates = Vec::new();
-            for line in lines.iter_mut() {
-                let mut sync = TaskWarriorSync::new(&cfg.task_path, &cfg.tz)
-                    .context("Failed to open task database")
-                    .expect("Should be able to access task database");
+        let mut updates = Vec::new();
+        for line in lines.iter_mut() {
+            let mut sync = TaskWarriorSync::new(&cfg.task_path, &cfg.tz)
+                .context("Failed to open task database")
+                .expect("Should be able to access task database");
+            if cfg.direction == config::Direction::MdToTc {
                 let update = sync.md_to_tc(&mut line.task, path.clone(), cfg.vault_path.clone());
                 if update.is_ok() && update.unwrap() {
                     updates.push(line.clone());
                 }
-            }
-
-            let result = update_obsidian_tasks(&path, &updates);
-        } else {
-            // For every match that exists in TC, just replace it with the current tc data
-            let mut updates = Vec::new();
-            for line in lines.iter_mut() {
-                let mut sync = TaskWarriorSync::new(&cfg.task_path, &cfg.tz)
-                    .context("Failed to open task database")
-                    .expect("Should be able to access task database");
+            } else {
                 let update = sync.tc_to_md(&line.task, &cfg.tz);
                 if let Some(task) = update {
                     let updated_line = UpdateContext { task, ..*line };
                     updates.push(updated_line);
                 }
             }
-
-            let result = update_obsidian_tasks(&path, &updates);
+        }
+        let result = update_obsidian_tasks(&path, &updates);
+        if result.is_err() {
+            errors += 1;
         }
     }
-
-    Ok(())
-    /*
-    // 1. Find all md files in vault
-    let md_types = TypesBuilder::new().add_defaults().select("markdown").build().expect("Failed to build type matcher");
-    let paths: Vec<ignore::DirEntry> = WalkBuilder::new(cfg.vault_path).types(md_types)
-        .build()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_file())).collect();
-
-    // 2. Search all files for matches for tasks
-    for path in paths {
-        let task_matcher = RegexMatcher::new_line_matcher(r"- \[ |-|x] .*").expect("Failed to build regex matcher");
-        let sink = sinks::UTF8(|offset, text| {
-            // 3. Parse each task line
-            Ok(true)
-        });
-        let _ = Searcher::new().search_path(task_matcher, path.path(), sink);
+    if errors > 0 {
+        return Err(anyhow!("{errors} files failed to update"));
+    } else {
+        return Ok(());
     }
-
-    Ok(())
-    */
 }
