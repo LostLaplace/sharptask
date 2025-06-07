@@ -31,12 +31,8 @@ fn main() -> Result<()> {
             .expect("Failed to build regex matcher");
         let mut lines = Vec::new();
         let sink = sinks::UTF8(|offset, text| {
-            let task_option = taskparser::parse(text.to_string());
+            let task_option = taskparser::parse(text.to_string(), &cfg.tz);
             if let Some(task) = task_option {
-                match task.uuid {
-                    Some(_) => println!("  {}", format!("{}", task.to_string()).blue()),
-                    None => println!("  {}", format!("{}", task.to_string()).green()),
-                }
                 lines.push(UpdateContext {
                     line: usize::try_from(offset - 1).expect("Offset should fit"),
                     task,
@@ -53,12 +49,27 @@ fn main() -> Result<()> {
         if cfg.direction == config::Direction::MdToTc {
             let mut updates = Vec::new();
             for line in lines.iter_mut() {
-                let mut sync = TaskWarriorSync::new(&cfg.task_path)
+                let mut sync = TaskWarriorSync::new(&cfg.task_path, &cfg.tz)
                     .context("Failed to open task database")
                     .expect("Should be able to access task database");
                 let update = sync.md_to_tc(&mut line.task, path.clone(), cfg.vault_path.clone());
                 if update.is_ok() && update.unwrap() {
                     updates.push(line.clone());
+                }
+            }
+
+            let result = update_obsidian_tasks(&path, &updates);
+        } else {
+            // For every match that exists in TC, just replace it with the current tc data
+            let mut updates = Vec::new();
+            for line in lines.iter_mut() {
+                let mut sync = TaskWarriorSync::new(&cfg.task_path, &cfg.tz)
+                    .context("Failed to open task database")
+                    .expect("Should be able to access task database");
+                let update = sync.tc_to_md(&line.task, &cfg.tz);
+                if let Some(task) = update {
+                    let updated_line = UpdateContext { task, ..*line };
+                    updates.push(updated_line);
                 }
             }
 

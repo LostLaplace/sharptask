@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, offset::LocalResult};
 use colored::Colorize;
+use paste::paste;
 use regex::Regex;
 use std::fmt::{self, Display};
 use std::iter::Peekable;
@@ -57,6 +58,17 @@ impl Display for Status {
     }
 }
 
+impl From<taskchampion::Status> for Status {
+    fn from(tc_status: taskchampion::Status) -> Self {
+        match (tc_status) {
+            taskchampion::Status::Pending => return Status::Pending,
+            taskchampion::Status::Completed => return Status::Complete,
+            taskchampion::Status::Deleted => return Status::Canceled,
+            _ => return Status::Pending,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Priority {
     Lowest,
@@ -105,10 +117,94 @@ pub struct ObsidianTask {
     pub canceled: Option<NaiveDate>,
     pub priority: Priority,
     pub project: Option<String>,
-    tz: chrono_tz::Tz,
+    pub tz: chrono_tz::Tz,
 }
 
-const MIDNIGHT: chrono::NaiveTime = chrono::NaiveTime::from_hms(0, 0, 0);
+const MIDNIGHT: chrono::NaiveTime =
+    chrono::NaiveTime::from_hms_opt(0, 0, 0).expect("Invalid datetime");
+
+macro_rules! parse_date {
+    ($tc:expr, $tcData:expr) => {
+        $tc.get_value($tcData).map(|date: &str| {
+            let date_int = date.parse::<i64>().expect("Could not parse timestamp");
+            chrono::DateTime::from_timestamp(date_int, 0)
+                .expect("Invalid timestamp")
+                .date_naive()
+        })
+    };
+}
+
+impl From<taskchampion::Task> for ObsidianTask {
+    fn from(tc: taskchampion::Task) -> Self {
+        // Massage the tags into the right format
+        // If we have the 'next' tag, this will affect
+        // our priority distinction below so we have to
+        // do this first
+        let mut is_next_pri = false;
+        let tags: Vec<String> = tc
+            .get_tags()
+            .filter_map(|tag| {
+                if tag.is_user() {
+                    let tag_string = tag.to_string().replace("tag_", "");
+                    if tag_string == "next" {
+                        is_next_pri = true;
+                    }
+                    return Some(tag_string);
+                }
+                None
+            })
+            .collect();
+
+        ObsidianTaskBuilder::new()
+            .uuid(tc.get_uuid())
+            .status(tc.get_status().into())
+            .priority(match tc.get_priority() {
+                "L" => Priority::Low,
+                "H" => {
+                    if is_next_pri {
+                        Priority::Highest
+                    } else {
+                        Priority::High
+                    }
+                }
+                _ => Priority::Normal,
+            })
+            .tags(&tags)
+            // Obsidian only supports inline tags, so if we added tags in TC we have to just
+            // append them into the description
+            .description(
+                String::from(tc.get_description())
+                    + &tags
+                        .iter()
+                        .map(|tag| format!(" #{tag}"))
+                        .collect::<String>()
+                        .as_str(),
+            )
+            .due(parse_date!(tc, "due"))
+            .scheduled(parse_date!(tc, "scheduled"))
+            .start(parse_date!(tc, "wait"))
+            .created(parse_date!(tc, "created"))
+            .done(parse_date!(tc, "end"))
+            .canceled(parse_date!(tc, "end"))
+            .project(tc.get_value("project"))
+            .build()
+    }
+}
+
+macro_rules! convert_dates {
+    ($tz:expr, $($member:expr),*) => {
+        $(
+        $member = $member.map(|value| {
+            value
+                .and_time(MIDNIGHT)
+                .and_local_timezone(*$tz)
+                .earliest()
+                .unwrap()
+                .date_naive()
+        });
+        )*
+    };
+}
 
 macro_rules! compare_date_fn {
     ($name:ident, $taskParam:tt, $tcData:tt) => {
@@ -117,19 +213,35 @@ macro_rules! compare_date_fn {
                 ts.and_time(MIDNIGHT)
                     .and_local_timezone(self.tz)
                     .unwrap()
-                    .to_utc()
-                    .timestamp()
+                    .date_naive()
             });
-            let tc_date = other
-                .get_value($tcData)
-                .map(|ts| ts.parse::<i64>().ok())
-                .flatten();
+            let tc_date = other.get_value($tcData).map(|val| {
+                chrono::DateTime::from_timestamp(val.parse::<i64>().expect("Invalid timestamp"), 0)
+                    .expect("Invalid timestamp")
+                    .date_naive()
+            });
             task_date == tc_date
         }
     };
 }
 
 impl ObsidianTask {
+    pub fn with_tz(mut self, tz: &chrono_tz::Tz) -> Self {
+        self.tz = tz.clone();
+
+        convert_dates!(
+            tz,
+            self.due,
+            self.scheduled,
+            self.start,
+            self.created,
+            self.done,
+            self.canceled
+        );
+
+        self
+    }
+
     compare_date_fn!(compare_due, due, "due");
     compare_date_fn!(compare_schedule, scheduled, "scheduled");
     compare_date_fn!(compare_start, start, "wait");
@@ -224,7 +336,7 @@ impl Display for ObsidianTask {
             task.push_str(&format!(" {}", self.priority.to_string()));
         }
         if let Some(uuid) = self.uuid {
-            task.push_str(&format!(" [[uuid: {}|⚔]]", uuid));
+            task.push_str(&format!(" [[uuid: {}|⚔️]]", uuid));
         }
 
         write!(f, "{task}")
@@ -235,13 +347,22 @@ pub struct ObsidianTaskBuilder {
     task: ObsidianTask,
 }
 
-macro_rules! set_date_fn {
-    ($taskMember:tt) => {
-        pub fn $taskMember<T: AsRef<str>>(mut self, date: T) -> Self {
-            let dt = chrono::NaiveDate::parse_from_str(date.as_ref(), "%Y-%m-%d").unwrap();
-            self.task.$taskMember = Some(dt);
-            self
-        }
+macro_rules! define_date_functions {
+    ($($field:ident),*) => {
+        $(
+            paste! {
+                pub fn $field(mut self, value: Option<NaiveDate>) -> Self {
+                    self.task.$field = value;
+                    self
+                }
+
+                pub fn [<$field _str>]<S: AsRef<str>>(mut self, value: S) -> Self {
+                    let dt = chrono::NaiveDate::parse_from_str(value.as_ref(), "%Y-%m-%d").unwrap();
+                    self.task.$field = Some(dt);
+                    self
+                }
+            }
+        )*
     };
 }
 
@@ -249,6 +370,11 @@ impl ObsidianTaskBuilder {
     pub fn new() -> ObsidianTaskBuilder {
         let task = ObsidianTask::default();
         ObsidianTaskBuilder { task }
+    }
+
+    pub fn tz(mut self, tz: chrono_tz::Tz) -> Self {
+        self.task.tz = tz;
+        self
     }
 
     pub fn uuid(mut self, uuid: Uuid) -> Self {
@@ -266,8 +392,8 @@ impl ObsidianTaskBuilder {
         self
     }
 
-    pub fn tags(mut self, tags: &[&str]) -> Self {
-        let tag_strings = tags.iter().map(|itm| itm.to_string());
+    pub fn tags<S: AsRef<str>>(mut self, tags: &[S]) -> Self {
+        let tag_strings = tags.iter().map(|itm| itm.as_ref().to_string());
         let tag_vec: Vec<String> = Vec::from_iter(tag_strings);
         self.task.tags = tag_vec;
         self
@@ -278,17 +404,17 @@ impl ObsidianTaskBuilder {
         self
     }
 
-    pub fn project<T: Into<String>>(mut self, project: T) -> Self {
+    pub fn project<S: Into<String>>(mut self, project: Option<S>) -> Self {
+        self.task.project = project.map(|x| x.into());
+        self
+    }
+
+    pub fn project_str<T: Into<String>>(mut self, project: T) -> Self {
         self.task.project = Some(project.into());
         self
     }
 
-    set_date_fn!(due);
-    set_date_fn!(scheduled);
-    set_date_fn!(start);
-    set_date_fn!(created);
-    set_date_fn!(done);
-    set_date_fn!(canceled);
+    define_date_functions!(due, scheduled, start, created, done, canceled);
 
     pub fn build(self) -> ObsidianTask {
         self.task
@@ -401,15 +527,10 @@ impl Iterator for MetadataParser<'_> {
     }
 }
 
-pub fn parse(mut task_string: String) -> Option<ObsidianTask> {
+pub fn parse(mut task_string: String, tz: &chrono_tz::Tz) -> Option<ObsidianTask> {
     let mut task = ObsidianTask::default();
 
-    let tz: chrono_tz::Tz = localzone::get_local_zone()
-        .unwrap_or(String::from("UTC"))
-        .parse()
-        .unwrap_or(chrono_tz::UTC);
-
-    task.tz = tz;
+    task.tz = tz.clone();
 
     let status = parse_preamble(&mut task_string);
     task.status = status?;
@@ -446,7 +567,7 @@ pub fn parse(mut task_string: String) -> Option<ObsidianTask> {
 fn extract_task_parts(task: &mut String) -> (Option<String>, Option<Result<Uuid>>) {
     // Returns a tuple with the metadata string and UUID as options
     let mut uuid: Option<Result<Uuid>> = None;
-    let uuid_re = Regex::new(r"(?<whole>\[\[uuid: (?<uuid>.*)\|⚔\]\])").unwrap();
+    let uuid_re = Regex::new(r"(?<whole>\[\[uuid: (?<uuid>.*)\|⚔️\u{FE0F}?\]\])").unwrap();
     if let Some(caps) = uuid_re.captures(task) {
         uuid = caps.name("uuid").map(|id| {
             Uuid::parse_str(id.as_str())
@@ -513,6 +634,8 @@ mod tests {
 
     use super::*;
 
+    use pretty_assertions::{assert_eq, assert_ne};
+
     #[test]
     fn test_task_bank() {
         let test_bank = vec![
@@ -531,7 +654,7 @@ mod tests {
                     ObsidianTaskBuilder::new()
                         .status(Status::Pending)
                         .description("Task with due date")
-                        .due("2025-05-19")
+                        .due_str("2025-05-19")
                         .build(),
                 ),
             ),
@@ -541,13 +664,13 @@ mod tests {
                     ObsidianTaskBuilder::new()
                         .status(Status::Complete)
                         .description("Task with due date and creation date")
-                        .due("2025-05-27")
-                        .created("2025-05-19")
+                        .due_str("2025-05-27")
+                        .created_str("2025-05-19")
                         .build(),
                 ),
             ),
             (
-                "- [ ] Task with existing uuid [[uuid: a80c42ce-dd29-4dc7-8582-34f36fcf8b80|⚔]]",
+                "- [ ] Task with existing uuid [[uuid: a80c42ce-dd29-4dc7-8582-34f36fcf8b80|⚔️]]",
                 Some(
                     ObsidianTaskBuilder::new()
                         .uuid(Uuid::parse_str("a80c42ce-dd29-4dc7-8582-34f36fcf8b80").unwrap())
@@ -556,7 +679,7 @@ mod tests {
                 ),
             ),
             (
-                "- [ ] Task with invalid uuid [[uuid: uh-oh|⚔]]",
+                "- [ ] Task with invalid uuid [[uuid: uh-oh|⚔️]]",
                 Some(
                     ObsidianTaskBuilder::new()
                         .description("Task with invalid uuid")
@@ -583,16 +706,16 @@ mod tests {
                 ),
             ),
             (
-                "- [ ] Test task stuff 📅 2025-05-19 ⏳ 2025-05-20 🛫 2025-05-21 ➕ 2025-05-22 ✅ 2025-05-23 ❌ 2025-05-24 [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔]]",
+                "- [ ] Test task stuff 📅 2025-05-19 ⏳ 2025-05-20 🛫 2025-05-21 ➕ 2025-05-22 ✅ 2025-05-23 ❌ 2025-05-24 [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔️]]",
                 Some(
                     ObsidianTaskBuilder::new()
                         .description("Test task stuff")
-                        .due("2025-05-19")
-                        .start("2025-05-21")
-                        .scheduled("2025-05-20")
-                        .created("2025-05-22")
-                        .done("2025-05-23")
-                        .canceled("2025-05-24")
+                        .due_str("2025-05-19")
+                        .start_str("2025-05-21")
+                        .scheduled_str("2025-05-20")
+                        .created_str("2025-05-22")
+                        .done_str("2025-05-23")
+                        .canceled_str("2025-05-24")
                         .uuid(Uuid::parse_str("96bb3816-aedd-4033-8ff6-4746a700aac8").unwrap())
                         .build(),
                 ),
@@ -601,7 +724,7 @@ mod tests {
 
         for test in test_bank {
             let test_local = String::from(test.0);
-            let task = parse(test_local);
+            let task = parse(test_local, &chrono_tz::UTC);
             assert_eq!(task, test.1);
         }
     }
@@ -609,7 +732,7 @@ mod tests {
     #[test]
     fn test_priority() {
         let mut task = String::from(
-            "Test task stuff 🔺⏫🔼🔽⏬️ [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔]]",
+            "Test task stuff 🔺⏫🔼🔽⏬️ [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔️]]",
         );
         let (metadata, uuid) = extract_task_parts(&mut task);
         assert_eq!(metadata.clone().unwrap(), "🔺⏫🔼🔽⏬️");
@@ -646,7 +769,7 @@ mod tests {
     #[test]
     fn test_all() {
         let mut task = String::from(
-            "Test #task stuff #project/tag 📅 2025-05-19 ⏳ 2025-05-19 🛫 2025-05-19 ➕ 2025-05-19 ✅ 2025-05-19 ❌ 2025-05-19 🔨 This is a project 🔺⏫🔼🔽⏬️ [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔]]",
+            "Test #task stuff #project/tag 📅 2025-05-19 ⏳ 2025-05-19 🛫 2025-05-19 ➕ 2025-05-19 ✅ 2025-05-19 ❌ 2025-05-19 🔨 This is a project 🔺⏫🔼🔽⏬️ [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔️]]",
         );
         let (metadata, uuid) = extract_task_parts(&mut task);
         assert_eq!(
@@ -720,7 +843,7 @@ mod tests {
     #[test]
     fn test_date_parse_fail() {
         let mut task =
-            String::from("Test task stuff 📅25 [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔]]");
+            String::from("Test task stuff 📅25 [[uuid: 96bb3816-aedd-4033-8ff6-4746a700aac8|⚔️]]");
         let (metadata, _) = extract_task_parts(&mut task);
         let metadata_str = metadata.clone().unwrap();
         let mut metadata_iter = MetadataParser::new(&metadata_str);
@@ -744,8 +867,8 @@ mod tests {
         let task = ObsidianTaskBuilder::new()
             .uuid(tc_task.get_uuid())
             .description("This is a test")
-            .due("2025-06-02")
-            .scheduled("2025-06-01")
+            .due_str("2025-06-02")
+            .scheduled_str("2025-06-01")
             .tags(&["test", "test2", "next"])
             .project("Test project")
             .priority(Priority::Highest)
@@ -769,12 +892,12 @@ mod tests {
             .description("Test")
             .priority(Priority::High)
             .project("Test project")
-            .due("2025-05-10")
+            .due_str("2025-05-10")
             .build();
 
         assert_eq!(
             task.to_string(),
-            "- [ ] Test 🔨 Test project 📅 2025-05-10 ⏫ [[uuid: 25287dfa-c5b5-4772-8788-d64a41abf352|⚔]]"
+            "- [ ] Test 🔨 Test project 📅 2025-05-10 ⏫ [[uuid: 25287dfa-c5b5-4772-8788-d64a41abf352|⚔️]]"
         );
     }
 }

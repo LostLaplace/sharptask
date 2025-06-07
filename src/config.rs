@@ -12,6 +12,7 @@ pub struct Config {
     pub file_path: Option<PathBuf>,
     pub task_path: PathBuf,
     pub direction: Direction,
+    pub tz: chrono_tz::Tz,
 }
 
 const DEFAULT_PATH: &str = "~/.sharptask/config.toml";
@@ -20,13 +21,16 @@ const DEFAULT_PATH: &str = "~/.sharptask/config.toml";
 struct ConfigFile {
     vault_path: Option<PathBuf>,
     task_path: Option<PathBuf>,
+    timezone: Option<String>,
 }
 
 impl Default for ConfigFile {
     fn default() -> Self {
+        let tz = localzone::get_local_zone().unwrap_or(String::from("UTC"));
         ConfigFile {
             vault_path: None,
             task_path: Some(PathBuf::from("~/.task")),
+            timezone: Some(tz),
         }
     }
 }
@@ -40,6 +44,8 @@ struct Cli {
     task_db: Option<PathBuf>,
     #[arg(short, long)]
     config: Option<PathBuf>,
+    #[arg(long = "tz")]
+    timezone: Option<String>,
     #[command(subcommand)]
     dir: Direction,
 }
@@ -90,11 +96,21 @@ pub fn get() -> Config {
         })
         .expect("Task DB path must be provided via --task_db or config");
 
+    let tz: chrono_tz::Tz = cli
+        .timezone
+        .or(parsed_config.timezone)
+        .expect(
+            "TZ will default to the local timezone or UTC if not provided by commandline or config",
+        )
+        .parse()
+        .expect("Unable to parse TZ");
+
     Config {
         vault_path,
         task_path,
         file_path: cli.target.file,
         direction: cli.dir,
+        tz,
     }
 }
 

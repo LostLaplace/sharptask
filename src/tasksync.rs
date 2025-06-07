@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow};
-use chrono::{NaiveTime, Utc};
+use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
+use colored::Colorize;
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -13,8 +14,35 @@ pub struct TaskWarriorSync {
     tz: chrono_tz::Tz,
 }
 
+macro_rules! print_date_diff {
+    ($tz:expr, $task:expr, $tcTask:expr, $($taskMember:tt, $tcValue:expr), *) => {
+        $(
+        println!(
+            "{}",
+            format!(
+                "      {:?} -> {:?}",
+                $task.$taskMember.map(|val| val
+                    .and_time(MIDNIGHT)
+                    .and_local_timezone($task.tz)
+                    .earliest()
+                    .expect("Invalid timestamp")),
+                $tcTask.get_value($tcValue).map(|val| {
+                    chrono::DateTime::from_timestamp(
+                        val.parse::<i64>().expect("Invalid timestamp"),
+                        0,
+                    )
+                    .expect("Invalid timestamp")
+                    .with_timezone($tz)
+                })
+            )
+            .yellow()
+        );
+        )*
+    };
+}
+
 impl TaskWarriorSync {
-    pub fn new(path: &PathBuf) -> Result<Self> {
+    pub fn new(path: &PathBuf, tz: &chrono_tz::Tz) -> Result<Self> {
         let storage = StorageConfig::OnDisk {
             taskdb_dir: path.clone(),
             create_if_missing: false,
@@ -22,23 +50,18 @@ impl TaskWarriorSync {
         }
         .into_storage()
         .context("Failed to build storage context")?;
-        let tz: chrono_tz::Tz = localzone::get_local_zone()
-            .unwrap_or(String::from("UTC"))
-            .parse()
-            .unwrap_or(chrono_tz::UTC);
         Ok(TaskWarriorSync {
             replica: Replica::new(storage),
-            tz,
+            tz: tz.clone(),
         })
     }
 
     #[cfg(test)]
-    fn from_replica(replica: Replica) -> Self {
-        let tz: chrono_tz::Tz = localzone::get_local_zone()
-            .unwrap_or(String::from("UTC"))
-            .parse()
-            .unwrap_or(chrono_tz::UTC);
-        TaskWarriorSync { replica, tz }
+    fn from_replica(replica: Replica, tz: &chrono_tz::Tz) -> Self {
+        TaskWarriorSync {
+            replica,
+            tz: tz.clone(),
+        }
     }
 
     #[cfg(test)]
@@ -57,27 +80,58 @@ impl TaskWarriorSync {
         // 1. If task has UUID, find it in TC DB
         let mut ops = taskchampion::Operations::new();
 
+        match task.uuid {
+            Some(_) => println!("  {}", format!("{}", task.to_string()).blue()),
+            None => println!("  {}", format!("{}", task.to_string()).green()),
+        }
+
         if let Some(uuid) = task.uuid {
             if let Some(mut tc_task) = self.replica.get_task(uuid).ok().flatten() {
                 // If equal, skip processing
                 if *task == tc_task {
+                    println!("{}", "      No changes".yellow());
                     return Ok(false);
                 }
 
                 // Status update
                 if !task.compare_status(&tc_task) {
+                    println!(
+                        "      {}",
+                        format!("Status: {} -> {}", tc_task.get_status(), task.status).red()
+                    );
                     tc_task.set_status(task.status.clone().into(), &mut ops)?;
                 }
 
                 // Description update
                 if !task.compare_description(&tc_task) {
-                    tc_task.set_description(tc_task.get_description().to_string(), &mut ops)?;
+                    println!(
+                        "      {}",
+                        format!(
+                            "Desc: {} -> {}",
+                            tc_task.get_description(),
+                            task.description
+                        )
+                        .red()
+                    );
+                    tc_task.set_description(task.description.clone(), &mut ops)?;
                 }
 
                 const MIDNIGHT: NaiveTime = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
 
                 // Due date update
                 if !task.compare_due(&tc_task) {
+                    println!(
+                        "      {}",
+                        format!(
+                            "Due: {:?} -> {:?}",
+                            tc_task.get_due().map(|due| due.with_timezone(&self.tz)),
+                            task.due.map(|due| due
+                                .and_time(MIDNIGHT)
+                                .and_local_timezone(task.tz)
+                                .earliest())
+                        )
+                        .yellow()
+                    );
                     tc_task.set_due(
                         task.due.map(|date| {
                             date.and_time(MIDNIGHT)
@@ -91,6 +145,18 @@ impl TaskWarriorSync {
 
                 // Wait date update
                 if !task.compare_start(&tc_task) {
+                    println!(
+                        "      {}",
+                        format!(
+                            "Wait: {:?} -> {:?}",
+                            tc_task.get_wait().map(|due| due.with_timezone(&self.tz)),
+                            task.start.map(|start| start
+                                .and_time(MIDNIGHT)
+                                .and_local_timezone(task.tz)
+                                .earliest())
+                        )
+                        .red()
+                    );
                     tc_task.set_wait(
                         task.start.map(|date| {
                             date.and_time(MIDNIGHT)
@@ -109,6 +175,23 @@ impl TaskWarriorSync {
 
                 // Update tags
                 if !task.compare_tags(&tc_task) {
+                    println!(
+                        "      {}",
+                        format!(
+                            "Tags: {:?} -> {:?}",
+                            tc_task
+                                .get_tags()
+                                .filter_map(|t| {
+                                    if t.is_user() {
+                                        return Some(t.to_string().replace("_tag", ""));
+                                    }
+                                    None
+                                })
+                                .collect::<Vec<String>>(),
+                            task.tags,
+                        )
+                        .red()
+                    );
                     // Clear out existing tags
                     for tag in tc_task
                         .get_tags()
@@ -128,6 +211,23 @@ impl TaskWarriorSync {
 
                 // Update end date
                 if task.status == taskparser::Status::Complete && !task.compare_done(&tc_task) {
+                    println!(
+                        "      {}",
+                        format!(
+                            "Complete Date: {:?} -> {:?}",
+                            tc_task.get_value("end").map(|val| DateTime::from_timestamp(
+                                val.parse().expect("Timestamp is not valid"),
+                                0
+                            )
+                            .expect("Timestamp is not valid")
+                            .with_timezone(&self.tz)),
+                            task.done.map(|date| date
+                                .and_time(MIDNIGHT)
+                                .and_local_timezone(task.tz)
+                                .earliest())
+                        )
+                        .red()
+                    );
                     tc_task.set_value(
                         "end",
                         task.done.map(|ed| {
@@ -143,6 +243,23 @@ impl TaskWarriorSync {
                 }
 
                 if task.status == taskparser::Status::Canceled && !task.compare_canceled(&tc_task) {
+                    println!(
+                        "    {}",
+                        format!(
+                            "Canceled Date: {:?} -> {:?}",
+                            tc_task.get_value("end").map(|val| DateTime::from_timestamp(
+                                val.parse().expect("Timestamp is not valid"),
+                                0
+                            )
+                            .expect("Timestamp is not valid")
+                            .with_timezone(&self.tz)),
+                            task.canceled.map(|date| date
+                                .and_time(MIDNIGHT)
+                                .and_local_timezone(task.tz)
+                                .earliest())
+                        )
+                        .red()
+                    );
                     tc_task.set_value(
                         "end",
                         task.canceled.map(|ed| {
@@ -159,6 +276,25 @@ impl TaskWarriorSync {
 
                 // Update scheduled
                 if !task.compare_schedule(&tc_task) {
+                    println!(
+                        "    {}",
+                        format!(
+                            "Start Date: {:?} -> {:?}",
+                            tc_task
+                                .get_value("scheduled")
+                                .map(|val| DateTime::from_timestamp(
+                                    val.parse().expect("Timestamp is not valid"),
+                                    0
+                                )
+                                .expect("Timestamp is not valid")
+                                .with_timezone(&self.tz)),
+                            task.start.map(|date| date
+                                .and_time(MIDNIGHT)
+                                .and_local_timezone(task.tz)
+                                .earliest())
+                        )
+                        .red()
+                    );
                     tc_task.set_value(
                         "scheduled",
                         task.scheduled.map(|ed| {
@@ -176,6 +312,10 @@ impl TaskWarriorSync {
                 // Update priority
                 // Normal priority results in no special item in the task data
                 if !task.compare_priority(&tc_task) {
+                    println!(
+                        "      {}",
+                        format!("Priority: {} -> {}", tc_task.get_priority(), task.priority).red()
+                    );
                     let pri = match task.priority {
                         taskparser::Priority::Normal => None,
                         taskparser::Priority::Lowest | taskparser::Priority::Low => Some("L"),
@@ -192,6 +332,15 @@ impl TaskWarriorSync {
 
                 // Update project
                 if !task.compare_project(&tc_task) {
+                    println!(
+                        "    {}",
+                        format!(
+                            "Project: {:?} -> {:?}",
+                            tc_task.get_value("project"),
+                            task.project
+                        )
+                        .red()
+                    );
                     tc_task.set_value("project", task.project.clone(), &mut ops)?;
                 }
             }
@@ -325,6 +474,77 @@ impl TaskWarriorSync {
             return Ok(true);
         }
     }
+
+    pub fn tc_to_md(&mut self, task: &ObsidianTask, tz: &chrono_tz::Tz) -> Option<ObsidianTask> {
+        const MIDNIGHT: NaiveTime =
+            chrono::NaiveTime::from_hms_opt(0, 0, 0).expect("Invalid timestamp");
+        // Compare the task with its taskchampion version,
+        // if taskchampion exists and they don't match, return
+        // the new string to put in the markdown
+        if let Some(uuid) = task.uuid {
+            let tc_task_opt = self.replica.get_task(uuid).ok().flatten();
+            if let Some(tc_task) = tc_task_opt {
+                if *task != tc_task {
+                    if !task.compare_due(&tc_task) {
+                        print_date_diff!(tz, task, tc_task, due, "due");
+                    }
+                    if !task.compare_schedule(&tc_task) {
+                        print_date_diff!(tz, task, tc_task, scheduled, "scheduled");
+                    }
+                    if !task.compare_start(&tc_task) {
+                        print_date_diff!(tz, task, tc_task, start, "wait");
+                    }
+                    if !task.compare_created(&tc_task) {
+                        print_date_diff!(tz, task, tc_task, created, "created");
+                    }
+                    if !task.compare_done(&tc_task) {
+                        print_date_diff!(tz, task, tc_task, done, "end");
+                    }
+                    if !task.compare_canceled(&tc_task) {
+                        print_date_diff!(tz, task, tc_task, canceled, "end");
+                    }
+                    if !task.compare_status(&tc_task) {
+                        println!(
+                            "{}",
+                            format!("      {} -> {}", task.status, tc_task.get_status()).yellow()
+                        );
+                    }
+                    if !task.compare_description(&tc_task) {
+                        println!(
+                            "{}",
+                            format!(
+                                "      {} -> {}",
+                                task.description,
+                                tc_task.get_description()
+                            )
+                            .yellow()
+                        );
+                    }
+                    if !task.compare_priority(&tc_task) {
+                        println!(
+                            "{}",
+                            format!("      {} -> {}", task.priority, tc_task.get_priority())
+                                .yellow()
+                        );
+                    }
+                    if !task.compare_project(&tc_task) {
+                        println!(
+                            "{}",
+                            format!(
+                                "      {:?} -> {:?}",
+                                task.project,
+                                tc_task.get_value("project")
+                            )
+                            .yellow()
+                        );
+                    }
+                    let obsidian_task = ObsidianTask::from(tc_task);
+                    return Some(obsidian_task.with_tz(&self.tz));
+                }
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -347,7 +567,6 @@ pub fn update_obsidian_tasks<T: AsRef<Path>>(path: T, updates: &[UpdateContext])
     // Iterate through updates and replace those lines
     let mut tasks = Vec::with_capacity(updates.len());
     for update in updates {
-        println!("{:?}", file_lines);
         let trimmed = file_lines[update.line].trim_start();
         let whitespace_len = file_lines[update.line].len() - trimmed.len();
         let whitespace = &file_lines[update.line][0..whitespace_len];
@@ -376,6 +595,7 @@ mod tests {
     use std::io::Read;
     use std::str::FromStr;
 
+    use chrono_tz::UTC;
     use taskchampion::{Operations, Status, Task, Uuid};
 
     use crate::taskparser::Priority;
@@ -384,6 +604,8 @@ mod tests {
     use testfile::TestFile;
 
     use super::*;
+
+    use pretty_assertions::{assert_eq, assert_ne};
 
     #[test]
     fn test_file_update() {
@@ -429,12 +651,12 @@ mod tests {
             .status(taskchampion::Status::Pending)
             .build();
 
-        let mut ts = TaskWarriorSync::from_replica(replica);
+        let mut ts = TaskWarriorSync::from_replica(replica, &UTC);
 
         let mut obs_task = ObsidianTaskBuilder::new()
             .uuid(tc_task.get_uuid())
             .description("Test task")
-            .due("2025-05-28")
+            .due_str("2025-05-28")
             .project("My project")
             .priority(Priority::Normal)
             .build();
@@ -461,7 +683,7 @@ mod tests {
             .status(taskparser::Status::Complete)
             .build();
 
-        let mut ts = TaskWarriorSync::from_replica(replica);
+        let mut ts = TaskWarriorSync::from_replica(replica, &UTC);
 
         let result = ts.md_to_tc(&mut task, "", None).unwrap();
         assert!(!result);
@@ -486,7 +708,7 @@ mod tests {
             .priority(Priority::Highest)
             .build();
 
-        let mut ts = TaskWarriorSync::from_replica(replica);
+        let mut ts = TaskWarriorSync::from_replica(replica, &UTC);
 
         let result = ts.md_to_tc(&mut task, "", None).unwrap();
         assert!(!result);
@@ -513,7 +735,7 @@ mod tests {
             .priority(Priority::High)
             .build();
 
-        let mut ts = TaskWarriorSync::from_replica(replica);
+        let mut ts = TaskWarriorSync::from_replica(replica, &UTC);
 
         let result = ts.md_to_tc(&mut task, "", None).unwrap();
         assert!(!result);
@@ -532,16 +754,15 @@ mod tests {
             .priority(Priority::High)
             .build();
 
-        let mut ts = TaskWarriorSync::from_replica(replica);
+        let mut ts = TaskWarriorSync::from_replica(replica, &UTC);
         let result = ts.md_to_tc(&mut task, "test1.md", Some("/test2")).unwrap();
         assert!(result);
 
         assert_eq!(ts.replica.all_task_uuids().unwrap().len(), 1);
         let uuid = ts.replica.all_task_uuids().unwrap().pop().unwrap();
-        let reference_task = ObsidianTask {
-            uuid: Some(uuid.clone()),
-            ..task
-        };
+        let mut reference_task = task.clone();
+        reference_task.uuid = Some(uuid.clone());
+
         let result_task = ts.replica.get_task(uuid).unwrap().unwrap();
         assert_eq!(reference_task, result_task);
         let task_data = result_task.into_task_data();
