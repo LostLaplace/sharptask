@@ -657,7 +657,7 @@ mod tests {
             .uuid(tc_task.get_uuid())
             .description("Test task")
             .due_str("2025-05-28")
-            .project("My project")
+            .project(Some("My project"))
             .priority(Priority::Normal)
             .build();
 
@@ -776,5 +776,28 @@ mod tests {
             })
             .unwrap();
         assert_eq!("obsidian://open?vault=test2&file=test1", annotation);
+    }
+
+    #[test]
+    fn test_timezone() {
+        let mut o_task = ObsidianTaskBuilder::new()
+            .tz(chrono_tz::America::Chicago)
+            .description("Test")
+            .due_str("2025-06-07")
+            .build();
+
+        let replica = create_mem_replica();
+        let mut ts = TaskWarriorSync::from_replica(replica, &chrono_tz::America::Chicago);
+
+        ts.md_to_tc(&mut o_task, "", None).unwrap();
+
+        let uuid = ts.replica.all_task_uuids().unwrap()[0];
+        let task = ts.replica.get_task(uuid).unwrap().unwrap();
+        assert_eq!(
+            task.get_due().unwrap().timestamp(),
+            chrono::DateTime::parse_from_rfc3339("2025-06-07T05:00:00Z")
+                .unwrap()
+                .timestamp()
+        );
     }
 }

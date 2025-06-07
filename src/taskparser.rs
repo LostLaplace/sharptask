@@ -184,8 +184,14 @@ impl From<taskchampion::Task> for ObsidianTask {
             .scheduled(parse_date!(tc, "scheduled"))
             .start(parse_date!(tc, "wait"))
             .created(parse_date!(tc, "created"))
-            .done(parse_date!(tc, "end"))
-            .canceled(parse_date!(tc, "end"))
+            .done(match tc.get_status() {
+                taskchampion::Status::Completed => parse_date!(tc, "end"),
+                _ => None,
+            })
+            .canceled(match tc.get_status() {
+                taskchampion::Status::Deleted => parse_date!(tc, "end"),
+                _ => None,
+            })
             .project(tc.get_value("project"))
             .build()
     }
@@ -404,7 +410,7 @@ impl ObsidianTaskBuilder {
         self
     }
 
-    pub fn project<S: Into<String>>(mut self, project: Option<S>) -> Self {
+    pub fn project(mut self, project: Option<impl Into<String>>) -> Self {
         self.task.project = project.map(|x| x.into());
         self
     }
@@ -701,7 +707,7 @@ mod tests {
                     ObsidianTaskBuilder::new()
                         .status(Status::Canceled)
                         .description("Task with a project")
-                        .project("Project text 🙂")
+                        .project(Some("Project text 🙂"))
                         .build(),
                 ),
             ),
@@ -861,7 +867,7 @@ mod tests {
             .due("2025-06-02")
             .tags(&["test", "test2", "next"])
             .priority("H")
-            .project("Test project")
+            .project(Some("Test project"))
             .build();
 
         let task = ObsidianTaskBuilder::new()
@@ -870,7 +876,7 @@ mod tests {
             .due_str("2025-06-02")
             .scheduled_str("2025-06-01")
             .tags(&["test", "test2", "next"])
-            .project("Test project")
+            .project(Some("Test project"))
             .priority(Priority::Highest)
             .build();
 
@@ -891,7 +897,7 @@ mod tests {
             .uuid(Uuid::from_str("25287dfa-c5b5-4772-8788-d64a41abf352").unwrap())
             .description("Test")
             .priority(Priority::High)
-            .project("Test project")
+            .project(Some("Test project"))
             .due_str("2025-05-10")
             .build();
 

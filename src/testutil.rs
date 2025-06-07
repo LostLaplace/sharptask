@@ -1,4 +1,4 @@
-use taskchampion::{Uuid, Operations, Task, Replica, Status, StorageConfig};
+use taskchampion::{Operations, Replica, Status, StorageConfig, Task, Uuid};
 
 const MIDNIGHT: chrono::NaiveTime = chrono::NaiveTime::from_hms(0, 0, 0);
 
@@ -71,10 +71,12 @@ impl<'a, 'b> TaskBuilder<'a, 'b> {
         self
     }
 
-    pub fn project<T: Into<String>>(mut self, project: T) -> Self {
-        let _ = self
-            .task
-            .set_value("project", Some(project.into()), &mut self.context.ops);
+    pub fn project(mut self, project: Option<impl Into<String>>) -> Self {
+        if let Some(project_str) = project {
+            let _ = self
+                .task
+                .set_value("project", Some(project_str.into()), &mut self.context.ops);
+        }
         self
     }
 
