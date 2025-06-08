@@ -3,7 +3,7 @@
 mod tests {
     use std::fs;
     use std::path::PathBuf;
-    
+
     use taskchampion::storage::AccessMode;
     use taskchampion::{self, Operations, Replica, Status};
     use test_bin;
@@ -20,15 +20,6 @@ mod tests {
         println!("test path: {:?}", path);
         fs::copy(simple_md, path.join("simple.md"));
 
-        let storage = taskchampion::StorageConfig::OnDisk {
-            taskdb_dir: path.join("taskData"),
-            create_if_missing: true,
-            access_mode: AccessMode::ReadWrite,
-        }
-        .into_storage()
-        .unwrap();
-        let mut replica = Replica::new(storage);
-
         sharptask.args([
             "--task-db",
             path.join("taskData").to_str().unwrap(),
@@ -37,27 +28,37 @@ mod tests {
             "md-to-tc",
         ]);
 
+        let storage = taskchampion::StorageConfig::OnDisk {
+            taskdb_dir: path.join("taskData"),
+            create_if_missing: true,
+            access_mode: AccessMode::ReadWrite,
+        }
+        .into_storage()
+        .unwrap();
+
         let mut handle = sharptask.spawn().unwrap();
         assert!(handle.wait().unwrap().success());
 
+        let mut replica = Replica::new(storage);
         assert_eq!(replica.all_task_uuids().unwrap().len(), 2);
         let mut tasks = replica.all_tasks().unwrap();
-        let mut tasks_iterator = tasks.values_mut();
-        println!("{:?}", tasks_iterator);
-        let task1 = tasks_iterator
-            .find(|x| x.get_description().contains("Unsynced task"))
-            .unwrap();
-        let task2 = tasks_iterator
-            .find(|x| {
-                println!("test: {}", x.get_description());
-                x.get_description().contains("Completed task")
-            })
-            .unwrap();
+        let mut tasks_values = tasks.values_mut();
+        let mut task1_opt = None;
+        let mut task2_opt = None;
+        for task in tasks_values {
+            let desc = task.get_description();
+            if desc.contains("Unsynced task") {
+                task1_opt = Some(task);
+            } else if desc.contains("Completed task") {
+                task2_opt = Some(task);
+            }
+        }
+        let task1 = task1_opt.unwrap();
+        let task2 = task2_opt.unwrap();
         assert_eq!(task1.get_description(), "Unsynced task");
         assert_eq!(task1.get_status(), Status::Pending);
         assert_eq!(task2.get_description(), "Completed task");
         assert_eq!(task2.get_status(), Status::Completed);
-        println!("Task2: {:?}", task2);
 
         let contents = fs::read_to_string(path.join("simple.md")).unwrap();
         assert!(contents.contains("[[uuid: "));
