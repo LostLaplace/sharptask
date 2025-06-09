@@ -83,7 +83,6 @@ Each of these can be overriden at the command line. Use `--help` to learn more.
     - [ ] Clean up messy logic in some places
 - [ ] Improve testing
     - [ ] Add a more complete integration test suite
-    - [ ] Fix instability of the vault test
     - [ ] Add more testing for tc_to_md
 - [ ] If tags are added in TC, format them more nicely in obsidian (maybe put them in paranthesis after the description?)
 - [ ] Add more useful printout during operaiton
@@ -92,3 +91,4 @@ Each of these can be overriden at the command line. Use `--help` to learn more.
 - [ ] Automatically add nested list items in obsidian as annotations in TC
 - [ ] Write obsidian plugin to automatically invoke with md-to-tc when tasks are edited in the markdown
 - [ ] Add taskwarrior hooks to automatically invoke with tc-to-md when tasks are edited in taskwarrior
+- [ ] Maintain indentation for tasks that are not at left-most level in document
