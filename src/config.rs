@@ -1,6 +1,7 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use clap::{Args, Parser, Subcommand};
 use serde::Deserialize;
+use shellexpand::full;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -16,20 +17,31 @@ pub struct Config {
 
 const DEFAULT_PATH: &str = "~/.sharptask/config.toml";
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct ConfigFile {
+    #[serde(default)]
     vault_path: Option<PathBuf>,
+    #[serde(default = "default_task_path")]
     task_path: Option<PathBuf>,
+    #[serde(default = "default_timezone")]
     timezone: Option<String>,
+}
+
+fn default_task_path() -> Option<PathBuf> {
+    Some(PathBuf::from("~/.task"))
+}
+
+fn default_timezone() -> Option<String> {
+    let tz = localzone::get_local_zone().unwrap_or(String::from("UTC"));
+    Some(tz)
 }
 
 impl Default for ConfigFile {
     fn default() -> Self {
-        let tz = localzone::get_local_zone().unwrap_or(String::from("UTC"));
         ConfigFile {
             vault_path: None,
-            task_path: Some(PathBuf::from("~/.task")),
-            timezone: Some(tz),
+            task_path: default_task_path(),
+            timezone: default_timezone(),
         }
     }
 }
@@ -114,8 +126,15 @@ pub fn get() -> Config {
 }
 
 fn parse<P: AsRef<Path>>(config_path: P) -> Result<ConfigFile> {
-    let contents =
-        fs::read_to_string(&config_path).map_err(|e| anyhow!("Cannot read config file: {}", e))?;
+    let path = shellexpand::full(
+        config_path
+            .as_ref()
+            .to_str()
+            .context("Path contains invalid unicode characters")?,
+    )
+    .context("Unable to expand environment in path")?;
+    let contents = fs::read_to_string(path.into_owned())
+        .map_err(|e| anyhow!("Cannot read config file: {}", e))?;
     let config: ConfigFile = toml::from_str(&contents).map_err(|_| anyhow!("Cannot parse TOML"))?;
     Ok(config)
 }
