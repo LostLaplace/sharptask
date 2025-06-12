@@ -35,7 +35,7 @@ fn main() -> Result<()> {
     let mut errors = 0;
     for path in paths {
         println!("{}", format!("Processing: {}", &path.display()).blue());
-        let task_matcher = RegexMatcher::new_line_matcher(r"- \[ |-|x\] .*")
+        let task_matcher = RegexMatcher::new_line_matcher(r"- \[(?: |-|x)\] .*")
             .expect("Failed to build regex matcher");
         let mut lines = Vec::new();
         let sink = sinks::UTF8(|offset, text| {
