@@ -108,6 +108,31 @@ fn priority_to_str(p: &Priority) -> Option<&'static str> {
     }
 }
 
+/// Normalize an Obsidian wiki-link project value for Taskwarrior.
+///
+/// TaskNotes stores projects as wiki-links, e.g. `"[[Recovery Mode]]"` or
+/// `"[[Recovery Mode|rm]]"`. Taskwarrior expects a plain identifier with no
+/// spaces; we strip the brackets, take the display name (after `|` if present),
+/// and replace spaces with dots so TW's dot-notation hierarchy works.
+///
+/// Examples:
+/// - `"[[Recovery Mode]]"`      → `"Recovery.Mode"`
+/// - `"[[My Project|myproj]]"`  → `"myproj"`
+/// - `"plain-project"`          → `"plain-project"` (unchanged)
+fn normalize_project(raw: &str) -> String {
+    let inner = raw.trim();
+    if let Some(stripped) = inner.strip_prefix("[[").and_then(|s| s.strip_suffix("]]")) {
+        let name = if let Some(alias) = stripped.find('|') {
+            &stripped[alias + 1..]
+        } else {
+            stripped
+        };
+        name.replace(' ', ".")
+    } else {
+        inner.to_string()
+    }
+}
+
 /// Strip ` #tagname` inline-tag patterns appended to the description by the
 /// `From<taskchampion::Task>` conversion. TaskNotes stores tags separately in
 /// the YAML frontmatter, so the title should be clean.
@@ -166,7 +191,7 @@ pub fn parse_file(
         .done(fm.completed.as_deref().and_then(parse_date))
         .canceled(fm.cancelled.as_deref().and_then(parse_date))
         .tags(&fm.tags.unwrap_or_default())
-        .project(fm.project)
+        .project(fm.project.as_deref().map(normalize_project))
         .build()
         .with_tz(tz);
 
@@ -400,5 +425,28 @@ mod tests {
         let f = write_temp_file("---\ntitle: Dropped task\nstatus: cancelled\n---\n");
         let (task, _) = parse_file(f.path(), &chrono_tz::UTC).unwrap().unwrap();
         assert_eq!(task.status, Status::Canceled);
+    }
+
+    #[test]
+    fn test_normalize_project_plain() {
+        assert_eq!(normalize_project("plain-project"), "plain-project");
+    }
+
+    #[test]
+    fn test_normalize_project_wikilink() {
+        assert_eq!(normalize_project("[[Recovery Mode]]"), "Recovery.Mode");
+    }
+
+    #[test]
+    fn test_normalize_project_wikilink_alias() {
+        assert_eq!(normalize_project("[[Recovery Mode|rm]]"), "rm");
+    }
+
+    #[test]
+    fn test_parse_project_wikilink() {
+        let content = "---\ntitle: My task\nproject: \"[[Recovery Mode]]\"\n---\n";
+        let f = write_temp_file(content);
+        let (task, _) = parse_file(f.path(), &chrono_tz::UTC).unwrap().unwrap();
+        assert_eq!(task.project.as_deref(), Some("Recovery.Mode"));
     }
 }
