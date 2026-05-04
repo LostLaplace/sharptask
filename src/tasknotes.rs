@@ -46,6 +46,11 @@ struct Frontmatter {
     /// Taskwarrior UUID — written by sharptask to track the TC representation.
     #[serde(skip_serializing_if = "Option::is_none")]
     tc_uuid: Option<String>,
+    /// Taskwarrior project identifier — written by sharptask. Kept separate
+    /// from `project` so the Obsidian wiki-link in `project` is never clobbered.
+    /// Auto-populated from `project` on first sync if absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tc_project: Option<String>,
     /// Last review date set by `tasksh review` (UDA `reviewed`).
     #[serde(skip_serializing_if = "Option::is_none")]
     reviewed: Option<String>,
@@ -191,7 +196,10 @@ pub fn parse_file(
         .done(fm.completed.as_deref().and_then(parse_date))
         .canceled(fm.cancelled.as_deref().and_then(parse_date))
         .tags(&fm.tags.unwrap_or_default())
-        .project(fm.project.as_deref().map(normalize_project))
+        .project(
+            fm.tc_project
+                .or_else(|| fm.project.as_deref().map(normalize_project)),
+        )
         .build()
         .with_tz(tz);
 
@@ -284,7 +292,7 @@ pub fn write_file(path: &Path, task: &ObsidianTask, extra: &TaskNotesExtra) -> R
     }
 
     if let Some(ref proj) = task.project {
-        set_str!("project", proj.clone());
+        set_str!("tc_project", proj.clone());
     }
 
     if let Some(uuid) = task.uuid {
@@ -444,9 +452,36 @@ mod tests {
 
     #[test]
     fn test_parse_project_wikilink() {
+        // No tc_project present — should auto-populate from normalized project link.
         let content = "---\ntitle: My task\nproject: \"[[Recovery Mode]]\"\n---\n";
         let f = write_temp_file(content);
         let (task, _) = parse_file(f.path(), &chrono_tz::UTC).unwrap().unwrap();
         assert_eq!(task.project.as_deref(), Some("Recovery.Mode"));
+    }
+
+    #[test]
+    fn test_tc_project_takes_precedence() {
+        // tc_project wins over project wiki-link.
+        let content =
+            "---\ntitle: My task\nproject: \"[[Recovery Mode]]\"\ntc_project: recovery\n---\n";
+        let f = write_temp_file(content);
+        let (task, _) = parse_file(f.path(), &chrono_tz::UTC).unwrap().unwrap();
+        assert_eq!(task.project.as_deref(), Some("recovery"));
+    }
+
+    #[test]
+    fn test_write_tc_project_does_not_touch_project() {
+        use crate::taskparser::ObsidianTaskBuilder;
+        let content = "---\ntitle: My task\nproject: \"[[Recovery Mode]]\"\n---\n";
+        let f = write_temp_file(content);
+        let task = ObsidianTaskBuilder::new()
+            .description("My task")
+            .project(Some("Recovery.Mode".to_string()))
+            .build();
+        write_file(f.path(), &task, &TaskNotesExtra::default()).unwrap();
+        let raw = std::fs::read_to_string(f.path()).unwrap();
+        // wiki-link preserved, tc_project written
+        assert!(raw.contains("project: '[[Recovery Mode]]'") || raw.contains("project: \"[[Recovery Mode]]\""));
+        assert!(raw.contains("tc_project: Recovery.Mode"));
     }
 }
