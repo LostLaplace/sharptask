@@ -1,6 +1,6 @@
 {
   "name": "sharptask-obsidian-plugin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Obsidian plugin: auto-sync TaskNotes to Taskwarrior via sharptask",
   "main": "main.js",
   "scripts": {
