@@ -47,7 +47,18 @@ fn main() -> Result<()> {
             .build()
             .filter_map(Result::ok)
             .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_file()))
-            .map(|x| x.into_path());
+            .map(|x| x.into_path())
+            .filter(|path| {
+                !cfg.excluded_paths.iter().any(|excl| {
+                    // Support both absolute excluded paths and vault-relative ones.
+                    let abs_excl = if excl.is_absolute() {
+                        excl.clone()
+                    } else {
+                        vault_path.join(excl)
+                    };
+                    path.starts_with(&abs_excl)
+                })
+            });
         paths.extend(walk_paths);
     }
 

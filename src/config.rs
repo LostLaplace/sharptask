@@ -17,6 +17,8 @@ pub struct Config {
     pub tz: chrono_tz::Tz,
     /// When set, only process the task with this UUID (useful for hooks).
     pub uuid: Option<Uuid>,
+    /// Vault-relative folder paths to exclude from inline-task scanning.
+    pub excluded_paths: Vec<PathBuf>,
 }
 
 const DEFAULT_PATH: &str = "~/.sharptask/config.toml";
@@ -31,6 +33,9 @@ struct ConfigFile {
     task_path: Option<PathBuf>,
     #[serde(default = "default_timezone")]
     timezone: Option<String>,
+    /// Vault-relative folder paths to exclude from inline-task scanning.
+    #[serde(default)]
+    excluded_paths: Vec<PathBuf>,
 }
 
 fn default_task_path() -> Option<PathBuf> {
@@ -49,6 +54,7 @@ impl Default for ConfigFile {
             tasknotes_path: None,
             task_path: default_task_path(),
             timezone: default_timezone(),
+            excluded_paths: Vec::new(),
         }
     }
 }
@@ -145,6 +151,16 @@ pub fn get() -> Config {
             .expect("--uuid must be a valid UUID (e.g. 550e8400-e29b-41d4-a716-446655440000)")
     });
 
+    let excluded_paths: Vec<PathBuf> = parsed_config
+        .excluded_paths
+        .into_iter()
+        .map(|path| {
+            let path_str = path.to_string_lossy();
+            let expanded = shellexpand::tilde(&path_str);
+            PathBuf::from(expanded.into_owned())
+        })
+        .collect();
+
     Config {
         vault_path,
         tasknotes_path,
@@ -153,6 +169,7 @@ pub fn get() -> Config {
         direction: cli.dir,
         tz,
         uuid,
+        excluded_paths,
     }
 }
 
