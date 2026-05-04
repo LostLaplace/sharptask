@@ -122,25 +122,26 @@ export default class SharpTaskPlugin extends Plugin {
 
       exec(cmd, (error, stdout, stderr) => {
         if (error) {
-          const msg = (stderr || error.message).trim();
-          new Notice(`SharpTask ✗ ${file.name}:\n${msg}`, 6000);
-          console.error("[sharptask]", msg);
+          // sharptask exits non-zero; stderr has the useful message.
+          const msg = (stderr || error.message).trim().split("\n")[0];
+          new Notice(`⚔️ ✗ ${file.name}: ${msg}`, 6000);
+          console.error("[sharptask]", stderr || error.message);
           this.statusBarEl.setText("⚔️ ✗");
           setTimeout(() => {
             this.statusBarEl.setText("⚔️");
             this.statusBarEl.setAttr("title", "SharpTask: idle");
           }, 5000);
-          // Keep cooldown active for 2s after failure so we don't retry immediately.
           this.setCooldown(file.path, 2000);
           return;
         }
 
-        const lines = stdout.trim().split("\n").filter(Boolean);
-        const synced = lines.filter((l) => l.trim().startsWith("- "));
-        if (synced.length > 0) {
-          new Notice(`⚔️ ${file.name}\n${synced.join("\n")}`, 3000);
+        // sharptask prints "No changes" (with ANSI colors) when tc and the
+        // file are already in sync.  Anything else means a new task was
+        // created or an existing task was updated — show a brief notice.
+        if (!stdout.includes("No changes")) {
+          new Notice(`⚔️ Synced: ${file.name}`, 2500);
         }
-        // No notice for "no changes" — silent is better here.
+        // Silent when nothing changed.
 
         this.statusBarEl.setText("⚔️");
         this.statusBarEl.setAttr("title", "SharpTask: idle");
