@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""
+Taskwarrior on-modify hook: syncs the modified task back to Obsidian via sharptask.
+
+Install:
+    cp scripts/on-modify-sharptask ~/.task/hooks/on-modify-sharptask
+    chmod +x ~/.task/hooks/on-modify-sharptask
+
+The hook reads the two-line on-modify protocol from stdin (original task JSON
+on line 1, modified task JSON on line 2), pipes both lines to:
+
+    sharptask hook
+
+which writes the updated data to the corresponding Obsidian TaskNote and
+echoes the modified task JSON back on stdout (as required by the TW protocol).
+"""
+
+import os
+import subprocess
+import sys
+
+
+def main() -> None:
+    raw = sys.stdin.read()
+
+    sharptask_bin = _find_sharptask()
+    if sharptask_bin is None:
+        # Can't sync, but must not block the task modification.
+        print("sharptask hook: binary not found", file=sys.stderr)
+        # Pass through the new task JSON so TW can still proceed.
+        lines = raw.strip().splitlines()
+        print(lines[1] if len(lines) > 1 else lines[0], flush=True)
+        return
+
+    try:
+        result = subprocess.run(
+            [sharptask_bin, "hook"],
+            input=raw,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        # sharptask hook echoes the new task JSON on stdout.
+        sys.stdout.write(result.stdout)
+        sys.stdout.flush()
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+    except subprocess.TimeoutExpired:
+        print("sharptask hook: timed out", file=sys.stderr)
+        lines = raw.strip().splitlines()
+        print(lines[1] if len(lines) > 1 else lines[0], flush=True)
+    except Exception as exc:
+        print(f"sharptask hook: {exc}", file=sys.stderr)
+        lines = raw.strip().splitlines()
+        print(lines[1] if len(lines) > 1 else lines[0], flush=True)
+
+
+def _find_sharptask() -> "str | None":
+    """Return the path to sharptask, searching PATH then common Cargo locations."""
+    import shutil
+
+    found = shutil.which("sharptask")
+    if found:
+        return found
+
+    for candidate in [
+        os.path.expanduser("~/.local/bin/sharptask"),
+        os.path.expanduser("~/.cargo/bin/sharptask"),
+    ]:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    return None
+
+
+if __name__ == "__main__":
+    main()

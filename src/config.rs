@@ -5,6 +5,7 @@ use shellexpand::full;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use taskchampion::Uuid;
 
 #[derive(Debug)]
 pub struct Config {
@@ -14,6 +15,8 @@ pub struct Config {
     pub task_path: PathBuf,
     pub direction: Direction,
     pub tz: chrono_tz::Tz,
+    /// When set, only process the task with this UUID (useful for hooks).
+    pub uuid: Option<Uuid>,
 }
 
 const DEFAULT_PATH: &str = "~/.sharptask/config.toml";
@@ -64,6 +67,9 @@ struct Cli {
     /// Path to a TaskNotes tasks folder (one .md file per task with YAML frontmatter)
     #[arg(long)]
     tasknotes: Option<PathBuf>,
+    /// Only process the task with this UUID (useful for on-modify hooks)
+    #[arg(long)]
+    uuid: Option<String>,
     #[command(subcommand)]
     dir: Direction,
 }
@@ -72,6 +78,11 @@ struct Cli {
 pub enum Direction {
     MdToTc,
     TcToMd,
+    /// Taskwarrior on-modify hook mode.
+    /// Reads two JSON lines from stdin (original task, modified task), writes the
+    /// modified task's fields back to its Obsidian TaskNote, and echoes the
+    /// (unmodified) task JSON to stdout as required by the hook protocol.
+    Hook,
 }
 
 #[derive(Args, Debug)]
@@ -129,6 +140,11 @@ pub fn get() -> Config {
         PathBuf::from(expanded.into_owned())
     });
 
+    let uuid = cli.uuid.map(|s| {
+        s.parse::<Uuid>()
+            .expect("--uuid must be a valid UUID (e.g. 550e8400-e29b-41d4-a716-446655440000)")
+    });
+
     Config {
         vault_path,
         tasknotes_path,
@@ -136,6 +152,7 @@ pub fn get() -> Config {
         file_path: cli.target.file,
         direction: cli.dir,
         tz,
+        uuid,
     }
 }
 

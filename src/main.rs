@@ -5,6 +5,7 @@ use ignore::{WalkBuilder, types::TypesBuilder};
 use tasksync::{TaskWarriorSync, UpdateContext, update_obsidian_tasks};
 
 mod config;
+mod hookhandler;
 mod taskparser;
 mod tasknotes;
 mod tasksync;
@@ -14,6 +15,20 @@ mod testutil;
 
 fn main() -> Result<()> {
     let cfg = config::get();
+
+    // ── on-modify hook mode ────────────────────────────────────────────────────
+    if cfg.direction == config::Direction::Hook {
+        let new_task_json =
+            hookhandler::run(cfg.tasknotes_path.as_ref(), &cfg.tz).unwrap_or_else(|e| {
+                eprintln!("sharptask hook error: {}", e);
+                String::new()
+            });
+        // The hook protocol requires the new task JSON on stdout.
+        if !new_task_json.is_empty() {
+            println!("{}", new_task_json);
+        }
+        return Ok(());
+    }
 
     let mut errors = 0;
 
@@ -59,6 +74,12 @@ fn main() -> Result<()> {
 
         let mut updates = Vec::new();
         for line in lines.iter_mut() {
+            // When a UUID filter is set, skip tasks that don't match.
+            if let Some(filter_uuid) = cfg.uuid {
+                if line.task.uuid != Some(filter_uuid) {
+                    continue;
+                }
+            }
             let mut sync = TaskWarriorSync::new(&cfg.task_path, &cfg.tz)
                 .context("Failed to open task database")
                 .expect("Should be able to access task database");
@@ -121,6 +142,13 @@ fn main() -> Result<()> {
                     continue;
                 }
             };
+
+            // When a UUID filter is set, skip files whose tc_uuid doesn't match.
+            if let Some(filter_uuid) = cfg.uuid {
+                if task.uuid != Some(filter_uuid) {
+                    continue;
+                }
+            }
 
             let mut sync = TaskWarriorSync::new(&cfg.task_path, &cfg.tz)
                 .context("Failed to open task database")
