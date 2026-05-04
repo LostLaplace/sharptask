@@ -1,0 +1,10 @@
+{
+  "id": "sharptask-sync",
+  "name": "SharpTask Sync",
+  "version": "0.2.0",
+  "minAppVersion": "1.0.0",
+  "description": "Auto-syncs Obsidian TaskNotes to Taskwarrior via sharptask whenever a file is saved.",
+  "author": "sharptask",
+  "authorUrl": "https://github.com/LostLaplace/sharptask",
+  "isDesktopOnly": true
+}

@@ -34,8 +34,8 @@ fn main() -> Result<()> {
 
     // ── Obsidian Tasks (inline markdown) ──────────────────────────────────────
     let mut paths = Vec::new();
-    if let Some(file_path) = cfg.file_path {
-        paths.push(file_path);
+    if let Some(ref file_path) = cfg.file_path {
+        paths.push(file_path.clone());
     } else if let Some(ref vault_path) = cfg.vault_path {
         let md_types = TypesBuilder::new()
             .add_defaults()
@@ -104,18 +104,27 @@ fn main() -> Result<()> {
 
     // ── TaskNotes (one .md file per task, YAML frontmatter) ───────────────────
     if let Some(ref tn_path) = cfg.tasknotes_path {
-        let md_types = TypesBuilder::new()
-            .add_defaults()
-            .select("markdown")
-            .build()
-            .expect("Failed to build type matcher");
-        let tn_files: Vec<_> = WalkBuilder::new(tn_path)
-            .types(md_types)
-            .build()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_file()))
-            .map(|x| x.into_path())
-            .collect();
+        // When --file is given, only process that file if it lives inside the
+        // TaskNotes folder; skip the entire loop otherwise (the file is a vault
+        // inline-task note, already handled above).
+        let tn_files: Vec<_> = match &cfg.file_path {
+            Some(fp) if fp.starts_with(tn_path) => vec![fp.clone()],
+            Some(_) => vec![],
+            None => {
+                let md_types = TypesBuilder::new()
+                    .add_defaults()
+                    .select("markdown")
+                    .build()
+                    .expect("Failed to build type matcher");
+                WalkBuilder::new(tn_path)
+                    .types(md_types)
+                    .build()
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_file()))
+                    .map(|x| x.into_path())
+                    .collect()
+            }
+        };
 
         for path in tn_files {
             println!(
