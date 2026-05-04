@@ -10,6 +10,7 @@ use std::path::PathBuf;
 pub struct Config {
     pub vault_path: Option<PathBuf>,
     pub file_path: Option<PathBuf>,
+    pub tasknotes_path: Option<PathBuf>,
     pub task_path: PathBuf,
     pub direction: Direction,
     pub tz: chrono_tz::Tz,
@@ -21,6 +22,8 @@ const DEFAULT_PATH: &str = "~/.sharptask/config.toml";
 struct ConfigFile {
     #[serde(default)]
     vault_path: Option<PathBuf>,
+    #[serde(default)]
+    tasknotes_path: Option<PathBuf>,
     #[serde(default = "default_task_path")]
     task_path: Option<PathBuf>,
     #[serde(default = "default_timezone")]
@@ -40,6 +43,7 @@ impl Default for ConfigFile {
     fn default() -> Self {
         ConfigFile {
             vault_path: None,
+            tasknotes_path: None,
             task_path: default_task_path(),
             timezone: default_timezone(),
         }
@@ -57,6 +61,9 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(long = "tz")]
     timezone: Option<String>,
+    /// Path to a TaskNotes tasks folder (one .md file per task with YAML frontmatter)
+    #[arg(long)]
+    tasknotes: Option<PathBuf>,
     #[command(subcommand)]
     dir: Direction,
 }
@@ -116,8 +123,15 @@ pub fn get() -> Config {
         .parse()
         .expect("Unable to parse TZ");
 
+    let tasknotes_path = cli.tasknotes.or(parsed_config.tasknotes_path).map(|path| {
+        let path_str = path.to_string_lossy();
+        let expanded = shellexpand::tilde(&path_str);
+        PathBuf::from(expanded.into_owned())
+    });
+
     Config {
         vault_path,
+        tasknotes_path,
         task_path,
         file_path: cli.target.file,
         direction: cli.dir,

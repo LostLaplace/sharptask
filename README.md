@@ -61,20 +61,59 @@ Currently, sharptask supports the following Obsidian Task plugin features:
 
 Sharptask looks for the following configuration file: ~/.sharptask/config.toml
 
-These are the current configuraitons:
+These are the current configurations:
 
 - vault_path: The default path to use for your vault when invoking sharptask
+- tasknotes_path: Path to a folder of TaskNotes files (one `.md` per task). See [TaskNotes support](#tasknotes-obsidian-plugin-support) below.
 - task_path: The path to your taskwarrior DB. Default: ~/.task/
 - timezone: A [chrono_tz compatible string representation](https://docs.rs/chrono-tz/latest/chrono_tz/) of the timezone you want to use when parsing dates from obsidian. Default: the timezone your device is set to
 
 ```toml
 # ~/.sharptask/config.toml
 vault_path = "/Users/youruser/Documents/ObsidianVaults/MyMainVault"
+tasknotes_path = "/Users/youruser/Documents/ObsidianVaults/MyMainVault/Tasks"
 task_path = "/Users/youruser/.task"
 timezone = "America/Chicago" # Or your local timezone
 ```
 
-Each of these can be overriden at the command line. Use `--help` to learn more.
+Each of these can be overridden at the command line. Use `--help` to learn more.
+
+## TaskNotes (Obsidian Plugin) Support
+
+Sharptask supports the [TaskNotes](https://github.com/callumalpass/tasknotes) Obsidian plugin, which
+stores each task as a separate Markdown file with YAML frontmatter (rather than as inline checkboxes).
+
+To enable this, point `--tasknotes` (or `tasknotes_path` in your config) at your TaskNotes folder:
+
+```
+sharptask --tasknotes ~/vault/Tasks md-to-tc
+sharptask --tasknotes ~/vault/Tasks tc-to-md
+```
+
+### How it works
+
+- **md-to-tc**: Each `.md` file in the folder is parsed. If the task has no `tc_uuid` field, a new
+  Taskwarrior task is created and the UUID is written back into the frontmatter. Existing tracked
+  tasks are synced to TC as normal.
+- **tc-to-md**: For each TaskNotes file that has a `tc_uuid`, the corresponding TC task is checked.
+  If the TC version differs, the file's YAML frontmatter is updated in place — the note body
+  (everything after the closing `---`) is preserved unchanged.
+
+### Supported fields
+
+| TaskNotes frontmatter | Taskwarrior field |
+|---|---|
+| `title` | description |
+| `status` (`todo`/`done`/`cancelled`) | status |
+| `priority` (`low`/`medium`/`high`/`highest`) | priority + `next` tag |
+| `due` | due |
+| `scheduled` | scheduled |
+| `start` | wait |
+| `created` | created |
+| `completed` / `cancelled` | end |
+| `tags` | user tags |
+| `project` | project |
+| `tc_uuid` | UUID (written by sharptask) |
 
 ## Todo and Wishlist
 

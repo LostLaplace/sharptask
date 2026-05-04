@@ -390,6 +390,11 @@ impl ObsidianTaskBuilder {
         self
     }
 
+    pub fn uuid_opt(mut self, uuid: Option<Uuid>) -> Self {
+        self.task.uuid = uuid;
+        self
+    }
+
     pub fn status(mut self, status: Status) -> Self {
         self.task.status = status;
         self
@@ -436,8 +441,11 @@ impl PartialEq<Task> for ObsidianTask {
             && self.compare_schedule(other)
             && self.compare_start(other)
             && self.compare_created(other)
-            && self.compare_done(other)
-            && self.compare_canceled(other)
+            // Both compare_done and compare_canceled check TC's "end" field.
+            // Only test the one that matches the task's current status to avoid
+            // a spurious mismatch on the other (None vs Some(end)).
+            && (self.status != Status::Complete || self.compare_done(other))
+            && (self.status != Status::Canceled || self.compare_canceled(other))
             && self.compare_uuid(other)
             && self.compare_status(other)
             && self.compare_description(other)

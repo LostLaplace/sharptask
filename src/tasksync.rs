@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, NaiveTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use colored::Colorize;
 use std::fs;
 use std::io::{BufWriter, Write};
@@ -77,16 +77,21 @@ impl TaskWarriorSync {
         file: T,
         vault_path: Option<T>,
     ) -> Result<bool> {
-        // 1. If task has UUID, find it in TC DB
+        // 1. If task has UUID, look it up in TC. A UUID can exist in the frontmatter
+        //    but be absent from TC (e.g. synced against a different DB), in which case
+        //    we fall through to the creation path and reuse the existing UUID.
         let mut ops = taskchampion::Operations::new();
 
-        match task.uuid {
-            Some(_) => println!("  {}", format!("{}", task.to_string()).blue()),
-            None => println!("  {}", format!("{}", task.to_string()).green()),
+        let existing_tc_task = task
+            .uuid
+            .and_then(|uuid| self.replica.get_task(uuid).ok().flatten());
+
+        match existing_tc_task.is_some() {
+            true => println!("  {}", format!("{}", task.to_string()).blue()),
+            false => println!("  {}", format!("{}", task.to_string()).green()),
         }
 
-        if let Some(uuid) = task.uuid {
-            if let Some(mut tc_task) = self.replica.get_task(uuid).ok().flatten() {
+        if let Some(mut tc_task) = existing_tc_task {
                 // If equal, skip processing
                 if *task == tc_task {
                     println!("{}", "      No changes".yellow());
@@ -343,7 +348,6 @@ impl TaskWarriorSync {
                     );
                     tc_task.set_value("project", task.project.clone(), &mut ops)?;
                 }
-            }
 
             if ops.is_empty() {
                 return Ok(false);
@@ -354,9 +358,10 @@ impl TaskWarriorSync {
                 .map(|_| false)
                 .context("Failed committing operations");
         } else {
-            // Generate UUID and create task
+            // Create task, reusing UUID from frontmatter if present (e.g. synced against a
+            // different DB), otherwise generate a fresh one.
             const MIDNIGHT: NaiveTime = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
-            let uuid = Uuid::new_v4();
+            let uuid = task.uuid.unwrap_or_else(Uuid::new_v4);
             task.uuid = Some(uuid);
             let mut tc_task = self.replica.create_task(uuid, &mut ops)?;
             tc_task.set_status(task.status.clone().into(), &mut ops)?;
@@ -409,21 +414,17 @@ impl TaskWarriorSync {
                 }),
                 &mut ops,
             )?;
+            // Pick whichever end date applies to this task's status.
+            // Using two consecutive set_value("end", ...) would always overwrite
+            // the first with the second, clearing a valid done date on completed tasks.
+            let end_date = match task.status {
+                taskparser::Status::Complete => task.done,
+                taskparser::Status::Canceled => task.canceled,
+                taskparser::Status::Pending => None,
+            };
             tc_task.set_value(
                 "end",
-                task.done.map(|x| {
-                    x.and_time(MIDNIGHT)
-                        .and_local_timezone(self.tz)
-                        .unwrap()
-                        .to_utc()
-                        .timestamp()
-                        .to_string()
-                }),
-                &mut ops,
-            )?;
-            tc_task.set_value(
-                "end",
-                task.canceled.map(|x| {
+                end_date.map(|x| {
                     x.and_time(MIDNIGHT)
                         .and_local_timezone(self.tz)
                         .unwrap()
@@ -473,6 +474,41 @@ impl TaskWarriorSync {
 
             return Ok(true);
         }
+    }
+
+    /// Returns the `reviewed` UDA date set by `tasksh review`, if present.
+    /// The date is expressed in UTC so that comparisons are stable across timezones.
+    pub fn get_reviewed(&mut self, uuid: Uuid) -> Option<NaiveDate> {
+        self.replica
+            .get_task(uuid)
+            .ok()
+            .flatten()
+            .and_then(|task| {
+                task.get_value("reviewed").and_then(|val| {
+                    val.parse::<i64>().ok().and_then(|ts| {
+                        chrono::DateTime::from_timestamp(ts, 0).map(|dt| dt.date_naive())
+                    })
+                })
+            })
+    }
+
+    /// Writes a `reviewed` date back to a TC task (sets the `reviewed` UDA).
+    /// Stored as midnight UTC so it round-trips cleanly with `get_reviewed`.
+    pub fn sync_reviewed(&mut self, uuid: Uuid, reviewed: NaiveDate) -> Result<()> {
+        const MIDNIGHT: NaiveTime = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+        if let Some(mut tc_task) = self.replica.get_task(uuid).ok().flatten() {
+            let mut ops = taskchampion::Operations::new();
+            let ts = reviewed
+                .and_time(MIDNIGHT)
+                .and_utc()
+                .timestamp()
+                .to_string();
+            tc_task.set_value("reviewed", Some(ts), &mut ops)?;
+            self.replica
+                .commit_operations(ops)
+                .context("Failed to commit reviewed update")?;
+        }
+        Ok(())
     }
 
     pub fn tc_to_md(&mut self, task: &ObsidianTask, tz: &chrono_tz::Tz) -> Option<ObsidianTask> {

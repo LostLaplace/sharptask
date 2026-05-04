@@ -6,6 +6,7 @@ use tasksync::{TaskWarriorSync, UpdateContext, update_obsidian_tasks};
 
 mod config;
 mod taskparser;
+mod tasknotes;
 mod tasksync;
 
 #[cfg(test)]
@@ -14,16 +15,19 @@ mod testutil;
 fn main() -> Result<()> {
     let cfg = config::get();
 
+    let mut errors = 0;
+
+    // ── Obsidian Tasks (inline markdown) ──────────────────────────────────────
     let mut paths = Vec::new();
     if let Some(file_path) = cfg.file_path {
         paths.push(file_path);
-    } else {
+    } else if let Some(ref vault_path) = cfg.vault_path {
         let md_types = TypesBuilder::new()
             .add_defaults()
             .select("markdown")
             .build()
             .expect("Failed to build type matcher");
-        let walk_paths = WalkBuilder::new(cfg.vault_path.as_ref().expect("No vault set"))
+        let walk_paths = WalkBuilder::new(vault_path)
             .types(md_types)
             .build()
             .filter_map(Result::ok)
@@ -32,7 +36,6 @@ fn main() -> Result<()> {
         paths.extend(walk_paths);
     }
 
-    let mut errors = 0;
     for path in paths {
         println!("{}", format!("Processing: {}", &path.display()).blue());
         let task_matcher = RegexMatcher::new_line_matcher(r"- \[(?: |-|x)\] .*")
@@ -77,6 +80,103 @@ fn main() -> Result<()> {
             errors += 1;
         }
     }
+
+    // ── TaskNotes (one .md file per task, YAML frontmatter) ───────────────────
+    if let Some(ref tn_path) = cfg.tasknotes_path {
+        let md_types = TypesBuilder::new()
+            .add_defaults()
+            .select("markdown")
+            .build()
+            .expect("Failed to build type matcher");
+        let tn_files: Vec<_> = WalkBuilder::new(tn_path)
+            .types(md_types)
+            .build()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_file()))
+            .map(|x| x.into_path())
+            .collect();
+
+        for path in tn_files {
+            println!(
+                "{}",
+                format!("Processing TaskNote: {}", &path.display()).blue()
+            );
+
+            let task_result = tasknotes::parse_file(&path, &cfg.tz);
+            let (mut task, mut extra) = match task_result {
+                Ok(Some(t)) => t,
+                Ok(None) => {
+                    println!(
+                        "  {}",
+                        format!("Skipping (no title/frontmatter): {}", path.display()).yellow()
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    println!(
+                        "  {}",
+                        format!("Failed to parse {}: {}", path.display(), e).red()
+                    );
+                    errors += 1;
+                    continue;
+                }
+            };
+
+            let mut sync = TaskWarriorSync::new(&cfg.task_path, &cfg.tz)
+                .context("Failed to open task database")
+                .expect("Should be able to access task database");
+
+            if cfg.direction == config::Direction::MdToTc {
+                match sync.md_to_tc(&mut task, &path, cfg.vault_path.as_ref()) {
+                    Ok(true) => {
+                        // New task: UUID was just assigned — write it back.
+                        // Also push any reviewed date from the frontmatter to TC.
+                        if let (Some(uuid), Some(reviewed)) = (task.uuid, extra.reviewed) {
+                            if let Err(e) = sync.sync_reviewed(uuid, reviewed) {
+                                println!("  {}", format!("Failed to sync reviewed for {}: {}", path.display(), e).red());
+                            }
+                        }
+                        if let Err(e) = tasknotes::write_file(&path, &task, &extra) {
+                            println!("  {}", format!("Failed to write {}: {}", path.display(), e).red());
+                            errors += 1;
+                        }
+                    }
+                    Ok(false) => {
+                        // Existing task: sync reviewed date if it differs.
+                        if let Some(uuid) = task.uuid {
+                            let tc_reviewed = sync.get_reviewed(uuid);
+                            if extra.reviewed != tc_reviewed {
+                                if let Some(reviewed) = extra.reviewed {
+                                    if let Err(e) = sync.sync_reviewed(uuid, reviewed) {
+                                        println!("  {}", format!("Failed to sync reviewed for {}: {}", path.display(), e).red());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("  {}", format!("Sync error for {}: {}", path.display(), e).red());
+                        errors += 1;
+                    }
+                }
+            } else {
+                let updated_task_opt = sync.tc_to_md(&task, &cfg.tz);
+                // Check if the reviewed date changed in TC independently of other fields.
+                let tc_reviewed = task.uuid.and_then(|uuid| sync.get_reviewed(uuid));
+                let reviewed_changed = tc_reviewed != extra.reviewed;
+
+                if updated_task_opt.is_some() || reviewed_changed {
+                    extra.reviewed = tc_reviewed;
+                    let task_to_write = updated_task_opt.as_ref().unwrap_or(&task);
+                    if let Err(e) = tasknotes::write_file(&path, task_to_write, &extra) {
+                        println!("  {}", format!("Failed to write {}: {}", path.display(), e).red());
+                        errors += 1;
+                    }
+                }
+            }
+        }
+    }
+
     if errors > 0 {
         return Err(anyhow!("{errors} files failed to update"));
     } else {
