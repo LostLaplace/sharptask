@@ -159,6 +159,13 @@ fn main() -> Result<()> {
                 }
             }
 
+            // Project TaskNotes (tagged 'project') are Obsidian-only — they
+            // have no direct TW representation; their children reference them
+            // via tc_project / project: field.
+            if task.tags.iter().any(|t| t == "project") {
+                continue;
+            }
+
             let mut sync = TaskWarriorSync::new(&cfg.task_path, &cfg.tz)
                 .context("Failed to open task database")
                 .expect("Should be able to access task database");
