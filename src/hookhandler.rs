@@ -11,6 +11,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use chrono::NaiveDateTime;
+use grep::{regex::RegexMatcher, searcher::SearcherBuilder, searcher::sinks::UTF8};
 use ignore::{WalkBuilder, types::TypesBuilder};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,7 @@ use taskchampion::Uuid;
 
 use crate::taskparser::{ObsidianTask, ObsidianTaskBuilder, Priority, Status};
 use crate::tasknotes::{self, TaskNotesExtra};
+use crate::tasksync::{UpdateContext, update_obsidian_tasks};
 
 /// Run the on-add hook: read stdin (one JSON line), echo it back, create a
 /// TaskNote if one doesn't already exist for this task.
@@ -61,7 +63,11 @@ pub fn run_on_add(tasknotes_path: Option<&PathBuf>, tz: &chrono_tz::Tz) -> Resul
 /// matching TaskNote file.
 ///
 /// Returns the new-task JSON string (for the caller to `print!` to stdout).
-pub fn run(tasknotes_path: Option<&PathBuf>, tz: &chrono_tz::Tz) -> Result<String> {
+pub fn run(
+    tasknotes_path: Option<&PathBuf>,
+    vault_path: Option<&PathBuf>,
+    tz: &chrono_tz::Tz,
+) -> Result<String> {
     let mut input = String::new();
     std::io::stdin()
         .read_line(&mut input)
@@ -109,6 +115,18 @@ pub fn run(tasknotes_path: Option<&PathBuf>, tz: &chrono_tz::Tz) -> Result<Strin
         // If no matching file is found the task has no TaskNote yet — that's fine.
     }
 
+    // Update inline task in vault note (if any).
+    if let Some(vpath) = vault_path {
+        if let Some((file_path, line_num)) = find_inline_task_by_uuid(vpath, uuid)? {
+            let update = UpdateContext {
+                line: line_num,
+                task: obsidian_task.clone(),
+            };
+            update_obsidian_tasks(&file_path, &[update])
+                .with_context(|| format!("Failed to update inline task in {}", file_path.display()))?;
+        }
+    }
+
     Ok(new_task_json)
 }
 
@@ -148,7 +166,56 @@ fn find_tasknote_by_uuid(tasknotes_path: &Path, uuid: Uuid) -> Result<Option<Pat
     Ok(result)
 }
 
-/// Convert a Taskwarrior export JSON object into an `ObsidianTask`.
+/// Scan `vault_path` for an inline task line containing `[[uuid: <uuid>|⚔️]]`.
+/// Returns the file path and 0-based line number if found.
+fn find_inline_task_by_uuid(vault_path: &Path, uuid: Uuid) -> Result<Option<(PathBuf, usize)>> {
+    let needle = format!("[[uuid: {}|", uuid);
+    let pattern = format!(r"- \[.\].*\[\[uuid: {}", regex::escape(&uuid.to_string()));
+
+    let md_types = TypesBuilder::new()
+        .add_defaults()
+        .select("markdown")
+        .build()
+        .expect("Failed to build type matcher");
+
+    let matcher = RegexMatcher::new_line_matcher(&pattern)
+        .context("Failed to build UUID regex matcher")?;
+
+    let mut found: Option<(PathBuf, usize)> = None;
+
+    for entry in WalkBuilder::new(vault_path)
+        .types(md_types)
+        .build()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().map_or(false, |ft| ft.is_file()))
+    {
+        let path = entry.into_path();
+        // Fast path: skip files that don't mention the UUID at all.
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        if !content.contains(&needle) {
+            continue;
+        }
+
+        let mut line_result: Option<usize> = None;
+        let sink = UTF8(|lnum, _text| {
+            line_result = Some(usize::try_from(lnum - 1).unwrap_or(0));
+            Ok(false) // stop after first match
+        });
+        let _ = SearcherBuilder::new()
+            .line_number(true)
+            .build()
+            .search_path(&matcher, &path, sink);
+
+        if let Some(line_num) = line_result {
+            found = Some((path, line_num));
+            break;
+        }
+    }
+
+    Ok(found)
+}
+
+
 fn task_from_tw_json(v: &Value, tz: &chrono_tz::Tz) -> Result<ObsidianTask> {
     let uuid: Option<Uuid> = v
         .get("uuid")

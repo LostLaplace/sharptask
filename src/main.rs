@@ -19,7 +19,7 @@ fn main() -> Result<()> {
     // ── on-modify hook mode ────────────────────────────────────────────────────
     if cfg.direction == config::Direction::Hook {
         let new_task_json =
-            hookhandler::run(cfg.tasknotes_path.as_ref(), &cfg.tz).unwrap_or_else(|e| {
+            hookhandler::run(cfg.tasknotes_path.as_ref(), cfg.vault_path.as_ref(), &cfg.tz).unwrap_or_else(|e| {
                 eprintln!("sharptask hook error: {}", e);
                 String::new()
             });
