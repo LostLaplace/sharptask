@@ -224,8 +224,10 @@ pub fn parse_file(
             fm.tc_project
                 .or_else(|| fm.project.as_deref().map(normalize_project)),
         )
-        .build()
-        .with_tz(tz);
+        // Dates parsed from the file are already in local time — set tz without
+        // re-converting (with_tz would treat them as UTC and double-convert).
+        .tz(tz.clone())
+        .build();
 
     let extra = TaskNotesExtra {
         reviewed: fm.reviewed.as_deref().and_then(|s| {

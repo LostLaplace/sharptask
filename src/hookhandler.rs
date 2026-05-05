@@ -10,7 +10,7 @@
 //! when the hook runs).
 
 use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::NaiveDateTime;
 use ignore::{WalkBuilder, types::TypesBuilder};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -181,14 +181,14 @@ fn task_from_tw_json(v: &Value, tz: &chrono_tz::Tz) -> Result<ObsidianTask> {
         _ => Priority::Normal,
     };
 
-    let due = parse_tw_date(v.get("due").and_then(|x| x.as_str()));
-    let start = parse_tw_date(v.get("wait").and_then(|x| x.as_str()));
-    let scheduled = parse_tw_date(v.get("scheduled").and_then(|x| x.as_str()));
-    let created = parse_tw_date(v.get("entry").and_then(|x| x.as_str()));
+    let due = parse_tw_date(v.get("due").and_then(|x| x.as_str()), tz);
+    let start = parse_tw_date(v.get("wait").and_then(|x| x.as_str()), tz);
+    let scheduled = parse_tw_date(v.get("scheduled").and_then(|x| x.as_str()), tz);
+    let created = parse_tw_date(v.get("entry").and_then(|x| x.as_str()), tz);
 
     let (done, canceled) = match status {
-        Status::Complete => (parse_tw_date(v.get("end").and_then(|x| x.as_str())), None),
-        Status::Canceled => (None, parse_tw_date(v.get("end").and_then(|x| x.as_str()))),
+        Status::Complete => (parse_tw_date(v.get("end").and_then(|x| x.as_str()), tz), None),
+        Status::Canceled => (None, parse_tw_date(v.get("end").and_then(|x| x.as_str()), tz)),
         Status::Pending => (None, None),
     };
 
@@ -241,11 +241,13 @@ fn task_from_tw_json(v: &Value, tz: &chrono_tz::Tz) -> Result<ObsidianTask> {
     Ok(builder.build())
 }
 
-/// Parse a Taskwarrior date string (`20260101T000000Z`) into a `NaiveDateTime`.
-fn parse_tw_date(s: Option<&str>) -> Option<NaiveDateTime> {
+/// Parse a Taskwarrior date string (`20260101T000000Z`) into a `NaiveDateTime` in local time.
+fn parse_tw_date(s: Option<&str>, tz: &chrono_tz::Tz) -> Option<NaiveDateTime> {
     let s = s?;
-    // TW format: YYYYMMDDTHHMMSSz
-    DateTime::parse_from_str(s, "%Y%m%dT%H%M%SZ")
+    // TW format: YYYYMMDDTHHMMSSz — always UTC (Z suffix). Strip the trailing Z
+    // and parse as NaiveDateTime, then treat as UTC before converting to local.
+    let s_trimmed = s.trim_end_matches('Z');
+    chrono::NaiveDateTime::parse_from_str(s_trimmed, "%Y%m%dT%H%M%S")
         .ok()
-        .map(|dt| dt.with_timezone(&Utc).naive_utc())
+        .map(|dt| dt.and_utc().with_timezone(tz).naive_local())
 }
