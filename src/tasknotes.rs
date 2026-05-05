@@ -216,7 +216,8 @@ pub fn parse_file(
 /// filesystem). If a file with that name already exists, a UUID suffix is
 /// appended to make it unique.
 pub fn create_file(dir: &Path, task: &ObsidianTask, extra: &TaskNotesExtra) -> Result<PathBuf> {
-    let safe_name = sanitize_filename(&task.description);
+    let clean_desc = strip_inline_tags(&task.description);
+    let safe_name = sanitize_filename(&clean_desc);
     let mut path = dir.join(format!("{}.md", safe_name));
 
     // Avoid clobbering an existing file with a different task.
@@ -228,7 +229,7 @@ pub fn create_file(dir: &Path, task: &ObsidianTask, extra: &TaskNotesExtra) -> R
         path = dir.join(format!("{}-{}.md", safe_name, suffix));
     }
 
-    let now = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z").to_string();
 
     // Write a skeleton with the fields TaskNotes expects on every note.
     // write_file will merge the task's own fields on top of this.
