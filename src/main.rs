@@ -242,6 +242,53 @@ fn main() -> Result<()> {
                 }
             }
         }
+
+        // ── tc-to-md: create TaskNotes for TC tasks that have none yet ─────────
+        if cfg.direction == config::Direction::TcToMd && cfg.file_path.is_none() {
+            // Collect UUIDs that already have a TaskNote file.
+            let known_uuids: std::collections::HashSet<taskchampion::Uuid> = {
+                WalkBuilder::new(tn_path)
+                    .types({
+                        let mut b = TypesBuilder::new();
+                        b.add_defaults();
+                        b.select("markdown");
+                        b.build().expect("Failed to build type matcher")
+                    })
+                    .build()
+                    .filter_map(Result::ok)
+                    .filter(|e| e.file_type().map_or(false, |ft| ft.is_file()))
+                    .filter_map(|e| {
+                        tasknotes::parse_file(e.path(), &cfg.tz)
+                            .ok()
+                            .flatten()
+                            .and_then(|(t, _)| t.uuid)
+                    })
+                    .collect()
+            };
+
+            let mut sync = TaskWarriorSync::new(&cfg.task_path, &cfg.tz)
+                .context("Failed to open task database")?;
+
+            for (uuid, tc_task) in sync.all_tasks() {
+                if known_uuids.contains(&uuid) {
+                    continue;
+                }
+                // Skip project-tagged tasks — they don't get TaskNotes.
+                if tc_task.tags.iter().any(|t| t == "project") {
+                    continue;
+                }
+                println!(
+                    "{}",
+                    format!("Creating TaskNote for: {}", tc_task.description).green()
+                );
+                if let Err(e) =
+                    tasknotes::create_file(tn_path, &tc_task, &tasknotes::TaskNotesExtra::default())
+                {
+                    println!("  {}", format!("Failed: {}", e).red());
+                    errors += 1;
+                }
+            }
+        }
     }
 
     if errors > 0 {

@@ -581,6 +581,25 @@ impl TaskWarriorSync {
         }
         None
     }
+
+    /// Return all non-deleted tasks from TC as `(uuid, ObsidianTask)` pairs.
+    /// Used by `tc-to-md` to find tasks that have no corresponding TaskNote yet.
+    pub fn all_tasks(&mut self) -> Vec<(Uuid, ObsidianTask)> {
+        self.replica
+            .all_tasks()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(uuid, tc_task)| {
+                use taskchampion::Status as TcStatus;
+                // Skip deleted tasks — they don't need a TaskNote.
+                if tc_task.get_status() == TcStatus::Deleted {
+                    return None;
+                }
+                let task = ObsidianTask::from(tc_task).with_tz(&self.tz);
+                Some((uuid, task))
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -228,8 +228,15 @@ pub fn create_file(dir: &Path, task: &ObsidianTask, extra: &TaskNotesExtra) -> R
         path = dir.join(format!("{}-{}.md", safe_name, suffix));
     }
 
-    // Write a minimal frontmatter skeleton so write_file can merge into it.
-    std::fs::write(&path, "---\nstatus: todo\n---\n")
+    let now = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    // Write a skeleton with the fields TaskNotes expects on every note.
+    // write_file will merge the task's own fields on top of this.
+    let skeleton = format!(
+        "---\nstatus: todo\ntags:\n  - task\ndateCreated: {}\ndateModified: {}\n---\n",
+        now, now
+    );
+    std::fs::write(&path, skeleton)
         .with_context(|| format!("Failed to create {:?}", path))?;
 
     write_file(&path, task, extra)?;
@@ -318,9 +325,22 @@ pub fn write_file(path: &Path, task: &ObsidianTask, extra: &TaskNotesExtra) -> R
 
     // Only overwrite tags when TC has tags to contribute; otherwise leave the
     // existing frontmatter tags (e.g. the plugin's own "task" tag) in place.
+    // When merging, always preserve the "task" tag that TaskNotes requires.
     if !task.tags.is_empty() {
-        let tag_vals: Vec<serde_yaml::Value> = task
-            .tags
+        let mut merged: Vec<String> = task.tags.clone();
+        // Preserve the "task" tag if the existing frontmatter had it.
+        let existing_has_task_tag = map
+            .get(&serde_yaml::Value::String("tags".to_string()))
+            .and_then(|v| v.as_sequence())
+            .map(|seq| {
+                seq.iter()
+                    .any(|v| v.as_str() == Some("task"))
+            })
+            .unwrap_or(false);
+        if existing_has_task_tag && !merged.iter().any(|t| t == "task") {
+            merged.insert(0, "task".to_string());
+        }
+        let tag_vals: Vec<serde_yaml::Value> = merged
             .iter()
             .map(|t| serde_yaml::Value::String(t.clone()))
             .collect();
