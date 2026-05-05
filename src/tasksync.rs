@@ -22,7 +22,6 @@ macro_rules! print_date_diff {
             format!(
                 "      {:?} -> {:?}",
                 $task.$taskMember.map(|val| val
-                    .and_time(MIDNIGHT)
                     .and_local_timezone($task.tz)
                     .earliest()
                     .expect("Invalid timestamp")),
@@ -121,8 +120,6 @@ impl TaskWarriorSync {
                     tc_task.set_description(task.description.clone(), &mut ops)?;
                 }
 
-                const MIDNIGHT: NaiveTime = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
-
                 // Due date update
                 if !task.compare_due(&tc_task) {
                     println!(
@@ -131,7 +128,6 @@ impl TaskWarriorSync {
                             "Due: {:?} -> {:?}",
                             tc_task.get_due().map(|due| due.with_timezone(&self.tz)),
                             task.due.map(|due| due
-                                .and_time(MIDNIGHT)
                                 .and_local_timezone(task.tz)
                                 .earliest())
                         )
@@ -139,8 +135,7 @@ impl TaskWarriorSync {
                     );
                     tc_task.set_due(
                         task.due.map(|date| {
-                            date.and_time(MIDNIGHT)
-                                .and_local_timezone(self.tz)
+                            date.and_local_timezone(self.tz)
                                 .unwrap()
                                 .to_utc()
                         }),
@@ -156,7 +151,6 @@ impl TaskWarriorSync {
                             "Wait: {:?} -> {:?}",
                             tc_task.get_wait().map(|due| due.with_timezone(&self.tz)),
                             task.start.map(|start| start
-                                .and_time(MIDNIGHT)
                                 .and_local_timezone(task.tz)
                                 .earliest())
                         )
@@ -164,8 +158,7 @@ impl TaskWarriorSync {
                     );
                     tc_task.set_wait(
                         task.start.map(|date| {
-                            date.and_time(MIDNIGHT)
-                                .and_local_timezone(self.tz)
+                            date.and_local_timezone(self.tz)
                                 .unwrap()
                                 .to_utc()
                         }),
@@ -227,7 +220,6 @@ impl TaskWarriorSync {
                             .expect("Timestamp is not valid")
                             .with_timezone(&self.tz)),
                             task.done.map(|date| date
-                                .and_time(MIDNIGHT)
                                 .and_local_timezone(task.tz)
                                 .earliest())
                         )
@@ -236,8 +228,7 @@ impl TaskWarriorSync {
                     tc_task.set_value(
                         "end",
                         task.done.map(|ed| {
-                            ed.and_time(MIDNIGHT)
-                                .and_local_timezone(self.tz)
+                            ed.and_local_timezone(self.tz)
                                 .unwrap()
                                 .to_utc()
                                 .timestamp()
@@ -259,7 +250,6 @@ impl TaskWarriorSync {
                             .expect("Timestamp is not valid")
                             .with_timezone(&self.tz)),
                             task.canceled.map(|date| date
-                                .and_time(MIDNIGHT)
                                 .and_local_timezone(task.tz)
                                 .earliest())
                         )
@@ -268,8 +258,7 @@ impl TaskWarriorSync {
                     tc_task.set_value(
                         "end",
                         task.canceled.map(|ed| {
-                            ed.and_time(MIDNIGHT)
-                                .and_local_timezone(self.tz)
+                            ed.and_local_timezone(self.tz)
                                 .unwrap()
                                 .to_utc()
                                 .timestamp()
@@ -294,7 +283,6 @@ impl TaskWarriorSync {
                                 .expect("Timestamp is not valid")
                                 .with_timezone(&self.tz)),
                             task.start.map(|date| date
-                                .and_time(MIDNIGHT)
                                 .and_local_timezone(task.tz)
                                 .earliest())
                         )
@@ -303,8 +291,7 @@ impl TaskWarriorSync {
                     tc_task.set_value(
                         "scheduled",
                         task.scheduled.map(|ed| {
-                            ed.and_time(MIDNIGHT)
-                                .and_local_timezone(self.tz)
+                            ed.and_local_timezone(self.tz)
                                 .unwrap()
                                 .to_utc()
                                 .timestamp()
@@ -360,7 +347,6 @@ impl TaskWarriorSync {
         } else {
             // Create task, reusing UUID from frontmatter if present (e.g. synced against a
             // different DB), otherwise generate a fresh one.
-            const MIDNIGHT: NaiveTime = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
             let uuid = task.uuid.unwrap_or_else(Uuid::new_v4);
             task.uuid = Some(uuid);
             let mut tc_task = self.replica.create_task(uuid, &mut ops)?;
@@ -369,8 +355,7 @@ impl TaskWarriorSync {
             tc_task.set_value(
                 "due",
                 task.due.map(|x| {
-                    x.and_time(MIDNIGHT)
-                        .and_local_timezone(self.tz)
+                    x.and_local_timezone(self.tz)
                         .unwrap()
                         .to_utc()
                         .timestamp()
@@ -381,8 +366,7 @@ impl TaskWarriorSync {
             tc_task.set_value(
                 "wait",
                 task.start.map(|x| {
-                    x.and_time(MIDNIGHT)
-                        .and_local_timezone(self.tz)
+                    x.and_local_timezone(self.tz)
                         .unwrap()
                         .to_utc()
                         .timestamp()
@@ -393,8 +377,7 @@ impl TaskWarriorSync {
             tc_task.set_value(
                 "scheduled",
                 task.scheduled.map(|x| {
-                    x.and_time(MIDNIGHT)
-                        .and_local_timezone(self.tz)
+                    x.and_local_timezone(self.tz)
                         .unwrap()
                         .to_utc()
                         .timestamp()
@@ -405,8 +388,7 @@ impl TaskWarriorSync {
             tc_task.set_value(
                 "created",
                 task.created.map(|x| {
-                    x.and_time(MIDNIGHT)
-                        .and_local_timezone(self.tz)
+                    x.and_local_timezone(self.tz)
                         .unwrap()
                         .to_utc()
                         .timestamp()
@@ -425,8 +407,7 @@ impl TaskWarriorSync {
             tc_task.set_value(
                 "end",
                 end_date.map(|x| {
-                    x.and_time(MIDNIGHT)
-                        .and_local_timezone(self.tz)
+                    x.and_local_timezone(self.tz)
                         .unwrap()
                         .to_utc()
                         .timestamp()

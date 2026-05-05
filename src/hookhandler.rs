@@ -10,7 +10,7 @@
 //! when the hook runs).
 
 use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use ignore::{WalkBuilder, types::TypesBuilder};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -241,11 +241,11 @@ fn task_from_tw_json(v: &Value, tz: &chrono_tz::Tz) -> Result<ObsidianTask> {
     Ok(builder.build())
 }
 
-/// Parse a Taskwarrior date string (`20260101T000000Z`) into a `NaiveDate`.
-fn parse_tw_date(s: Option<&str>) -> Option<NaiveDate> {
+/// Parse a Taskwarrior date string (`20260101T000000Z`) into a `NaiveDateTime`.
+fn parse_tw_date(s: Option<&str>) -> Option<NaiveDateTime> {
     let s = s?;
     // TW format: YYYYMMDDTHHMMSSz
     DateTime::parse_from_str(s, "%Y%m%dT%H%M%SZ")
         .ok()
-        .map(|dt| dt.with_timezone(&Utc).date_naive())
+        .map(|dt| dt.with_timezone(&Utc).naive_utc())
 }

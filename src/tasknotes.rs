@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use regex::Regex;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -71,8 +71,32 @@ fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
     }
 }
 
-fn parse_date(s: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()
+const MIDNIGHT: NaiveTime = NaiveTime::from_hms_opt(0, 0, 0).expect("Invalid time");
+
+/// Format a `NaiveDateTime` for TaskNotes frontmatter.
+/// Uses `%Y-%m-%dT%H:%M` when a time is set, `%Y-%m-%d` for midnight (date-only).
+fn format_date(dt: NaiveDateTime) -> String {
+    if dt.time() == MIDNIGHT {
+        dt.format("%Y-%m-%d").to_string()
+    } else {
+        dt.format("%Y-%m-%dT%H:%M").to_string()
+    }
+}
+
+fn parse_date(s: &str) -> Option<NaiveDateTime> {
+    let s = s.trim();
+    // Try datetime with seconds
+    if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        return Some(dt);
+    }
+    // Try datetime without seconds (TaskNotes format: 2026-05-05T18:00)
+    if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M") {
+        return Some(dt);
+    }
+    // Fall back to date-only at midnight
+    NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .ok()
+        .map(|d| d.and_time(MIDNIGHT))
 }
 
 fn parse_status(s: Option<&str>) -> Status {
@@ -204,7 +228,9 @@ pub fn parse_file(
         .with_tz(tz);
 
     let extra = TaskNotesExtra {
-        reviewed: fm.reviewed.as_deref().and_then(parse_date),
+        reviewed: fm.reviewed.as_deref().and_then(|s| {
+            NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()
+        }),
     };
 
     Ok(Some((task, extra)))
@@ -304,23 +330,23 @@ pub fn write_file(path: &Path, task: &ObsidianTask, extra: &TaskNotesExtra) -> R
     }
 
     match task.due {
-        Some(d) => set_str!("due", d.format("%Y-%m-%d").to_string()),
+        Some(d) => set_str!("due", format_date(d)),
         None => remove_key!("due"),
     }
     match task.scheduled {
-        Some(d) => set_str!("scheduled", d.format("%Y-%m-%d").to_string()),
+        Some(d) => set_str!("scheduled", format_date(d)),
         None => remove_key!("scheduled"),
     }
     match task.start {
-        Some(d) => set_str!("start", d.format("%Y-%m-%d").to_string()),
+        Some(d) => set_str!("start", format_date(d)),
         None => remove_key!("start"),
     }
     match task.done {
-        Some(d) => set_str!("completed", d.format("%Y-%m-%d").to_string()),
+        Some(d) => set_str!("completed", format_date(d)),
         None => remove_key!("completed"),
     }
     match task.canceled {
-        Some(d) => set_str!("cancelled", d.format("%Y-%m-%d").to_string()),
+        Some(d) => set_str!("cancelled", format_date(d)),
         None => remove_key!("cancelled"),
     }
 
@@ -395,7 +421,12 @@ mod tests {
         assert_eq!(task.priority, Priority::High);
         assert_eq!(
             task.due,
-            Some(NaiveDate::parse_from_str("2026-05-05", "%Y-%m-%d").unwrap())
+            Some(
+                NaiveDate::parse_from_str("2026-05-05", "%Y-%m-%d")
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+            )
         );
         assert_eq!(extra.reviewed, None);
     }

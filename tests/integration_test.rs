@@ -90,6 +90,8 @@ mod tests {
             path.join("simple.md").to_str().unwrap(),
             "--tasknotes",
             empty_tn.to_str().unwrap(),
+            "--tz",
+            "UTC",
             "tc-to-md",
         ]);
 
@@ -177,6 +179,8 @@ mod tests {
             empty_vault.to_str().unwrap(),
             "--tasknotes",
             tn_dir.to_str().unwrap(),
+            "--tz",
+            "UTC",
             "md-to-tc",
         ]);
 
@@ -251,6 +255,8 @@ mod tests {
             empty_vault.to_str().unwrap(),
             "--tasknotes",
             tn_dir.to_str().unwrap(),
+            "--tz",
+            "UTC",
             "tc-to-md",
         ]);
         let mut handle2 = tc_to_md.spawn().unwrap();

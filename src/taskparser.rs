@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow};
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveDateTime};
 use paste::paste;
 use regex::Regex;
 use std::fmt::{self, Display};
@@ -108,12 +108,12 @@ pub struct ObsidianTask {
     pub status: Status,
     pub description: String,
     pub tags: Vec<String>,
-    pub due: Option<NaiveDate>,
-    pub scheduled: Option<NaiveDate>,
-    pub start: Option<NaiveDate>,
-    pub created: Option<NaiveDate>,
-    pub done: Option<NaiveDate>,
-    pub canceled: Option<NaiveDate>,
+    pub due: Option<NaiveDateTime>,
+    pub scheduled: Option<NaiveDateTime>,
+    pub start: Option<NaiveDateTime>,
+    pub created: Option<NaiveDateTime>,
+    pub done: Option<NaiveDateTime>,
+    pub canceled: Option<NaiveDateTime>,
     pub priority: Priority,
     pub project: Option<String>,
     pub tz: chrono_tz::Tz,
@@ -128,7 +128,7 @@ macro_rules! parse_date {
             let date_int = date.parse::<i64>().expect("Could not parse timestamp");
             chrono::DateTime::from_timestamp(date_int, 0)
                 .expect("Invalid timestamp")
-                .date_naive()
+                .naive_utc()
         })
     };
 }
@@ -199,13 +199,8 @@ impl From<taskchampion::Task> for ObsidianTask {
 macro_rules! convert_dates {
     ($tz:expr, $($member:expr),*) => {
         $(
-        $member = $member.map(|value| {
-            value
-                .and_time(MIDNIGHT)
-                .and_local_timezone(*$tz)
-                .earliest()
-                .unwrap()
-                .date_naive()
+        $member = $member.map(|value: NaiveDateTime| {
+            value.and_utc().with_timezone($tz).naive_local()
         });
         )*
     };
@@ -214,18 +209,13 @@ macro_rules! convert_dates {
 macro_rules! compare_date_fn {
     ($name:ident, $taskParam:tt, $tcData:tt) => {
         pub fn $name(&self, other: &taskchampion::Task) -> bool {
-            let task_date = self.$taskParam.map(|ts| {
-                ts.and_time(MIDNIGHT)
-                    .and_local_timezone(self.tz)
-                    .unwrap()
-                    .date_naive()
+            let task_ts = self.$taskParam.and_then(|dt| {
+                dt.and_local_timezone(self.tz).earliest().map(|d| d.timestamp())
             });
-            let tc_date = other.get_value($tcData).map(|val| {
-                chrono::DateTime::from_timestamp(val.parse::<i64>().expect("Invalid timestamp"), 0)
-                    .expect("Invalid timestamp")
-                    .date_naive()
-            });
-            task_date == tc_date
+            let tc_ts = other
+                .get_value($tcData)
+                .and_then(|val| val.parse::<i64>().ok());
+            task_ts == tc_ts
         }
     };
 }
@@ -357,14 +347,16 @@ macro_rules! define_date_functions {
         $(
             paste! {
                 #[allow(dead_code)]
-                pub fn $field(mut self, value: Option<NaiveDate>) -> Self {
+                pub fn $field(mut self, value: Option<NaiveDateTime>) -> Self {
                     self.task.$field = value;
                     self
                 }
 
                 #[allow(dead_code)]
                 pub fn [<$field _str>]<S: AsRef<str>>(mut self, value: S) -> Self {
-                    let dt = chrono::NaiveDate::parse_from_str(value.as_ref(), "%Y-%m-%d").unwrap();
+                    let dt = NaiveDate::parse_from_str(value.as_ref(), "%Y-%m-%d")
+                        .unwrap()
+                        .and_time(MIDNIGHT);
                     self.task.$field = Some(dt);
                     self
                 }
@@ -457,12 +449,12 @@ impl PartialEq<Task> for ObsidianTask {
 
 #[derive(Debug, PartialEq)]
 enum ObsidianMetadata {
-    Due(NaiveDate),
-    Scheduled(NaiveDate),
-    Start(NaiveDate),
-    Created(NaiveDate),
-    Done(NaiveDate),
-    Canceled(NaiveDate),
+    Due(NaiveDateTime),
+    Scheduled(NaiveDateTime),
+    Start(NaiveDateTime),
+    Created(NaiveDateTime),
+    Done(NaiveDateTime),
+    Canceled(NaiveDateTime),
     Priority(Priority),
     Project(String),
 }
@@ -492,7 +484,7 @@ macro_rules! process_date {
             )));
         }
 
-        return Some(Ok($variant(nd.unwrap())));
+        return Some(Ok($variant(nd.unwrap().and_time(MIDNIGHT))));
     };
 }
 
@@ -801,32 +793,32 @@ mod tests {
 
         let metadata_str = metadata.clone().unwrap();
         let mut metadata_iter = MetadataParser::new(&metadata_str);
-        let reference = chrono_tz::America::Chicago
-            .with_ymd_and_hms(2025, 5, 19, 0, 0, 0)
-            .unwrap();
+        let reference = NaiveDate::parse_from_str("2025-05-19", "%Y-%m-%d")
+            .unwrap()
+            .and_time(MIDNIGHT);
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Due(reference.date_naive())
+            ObsidianMetadata::Due(reference)
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Scheduled(reference.date_naive())
+            ObsidianMetadata::Scheduled(reference)
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Start(reference.date_naive())
+            ObsidianMetadata::Start(reference)
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Created(reference.date_naive())
+            ObsidianMetadata::Created(reference)
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Done(reference.date_naive())
+            ObsidianMetadata::Done(reference)
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
-            ObsidianMetadata::Canceled(reference.date_naive())
+            ObsidianMetadata::Canceled(reference)
         );
         assert_eq!(
             metadata_iter.next().unwrap().unwrap(),
