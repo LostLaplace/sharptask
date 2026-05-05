@@ -23,9 +23,21 @@ fn main() -> Result<()> {
                 eprintln!("sharptask hook error: {}", e);
                 String::new()
             });
-        // The hook protocol requires the new task JSON on stdout.
         if !new_task_json.is_empty() {
             println!("{}", new_task_json);
+        }
+        return Ok(());
+    }
+
+    // ── on-add hook mode ───────────────────────────────────────────────────────
+    if cfg.direction == config::Direction::OnAdd {
+        let task_json =
+            hookhandler::run_on_add(cfg.tasknotes_path.as_ref(), &cfg.tz).unwrap_or_else(|e| {
+                eprintln!("sharptask on-add error: {}", e);
+                String::new()
+            });
+        if !task_json.is_empty() {
+            println!("{}", task_json);
         }
         return Ok(());
     }

@@ -19,6 +19,44 @@ use taskchampion::Uuid;
 use crate::taskparser::{ObsidianTask, ObsidianTaskBuilder, Priority, Status};
 use crate::tasknotes::{self, TaskNotesExtra};
 
+/// Run the on-add hook: read stdin (one JSON line), echo it back, create a
+/// TaskNote if one doesn't already exist for this task.
+///
+/// Returns the task JSON string (for the caller to `print!` to stdout).
+pub fn run_on_add(tasknotes_path: Option<&PathBuf>, tz: &chrono_tz::Tz) -> Result<String> {
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .context("Failed to read task JSON from stdin")?;
+    let task_json = input.trim_end().to_string();
+
+    let task_value: Value =
+        serde_json::from_str(&task_json).context("Failed to parse task JSON from TW")?;
+
+    if let Some(tn_path) = tasknotes_path {
+        let obsidian_task = task_from_tw_json(&task_value, tz)?;
+
+        // Only create a TaskNote if there isn't one already (e.g. task was
+        // imported or re-added after a sync).
+        let uuid_str = task_value
+            .get("uuid")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let uuid: Option<Uuid> = uuid_str.parse().ok();
+
+        let already_exists = uuid
+            .and_then(|u| find_tasknote_by_uuid(tn_path, u).ok().flatten())
+            .is_some();
+
+        if !already_exists {
+            crate::tasknotes::create_file(tn_path, &obsidian_task, &TaskNotesExtra::default())
+                .with_context(|| format!("Failed to create TaskNote in {}", tn_path.display()))?;
+        }
+    }
+
+    Ok(task_json)
+}
+
 /// Run the on-modify hook: read stdin, echo the new task JSON, update the
 /// matching TaskNote file.
 ///

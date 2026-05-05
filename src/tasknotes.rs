@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use regex::Regex;
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use taskchampion::Uuid;
 
 use crate::taskparser::{ObsidianTask, ObsidianTaskBuilder, Priority, Status};
@@ -210,7 +210,46 @@ pub fn parse_file(
     Ok(Some((task, extra)))
 }
 
-/// Write an `ObsidianTask` back to a TaskNotes `.md` file.
+/// Create a brand-new TaskNote `.md` file for a task that originates in TW.
+///
+/// The filename is derived from the task description (sanitized for the
+/// filesystem). If a file with that name already exists, a UUID suffix is
+/// appended to make it unique.
+pub fn create_file(dir: &Path, task: &ObsidianTask, extra: &TaskNotesExtra) -> Result<PathBuf> {
+    let safe_name = sanitize_filename(&task.description);
+    let mut path = dir.join(format!("{}.md", safe_name));
+
+    // Avoid clobbering an existing file with a different task.
+    if path.exists() {
+        let suffix = task
+            .uuid
+            .map(|u| u.to_string()[..8].to_string())
+            .unwrap_or_else(|| "new".to_string());
+        path = dir.join(format!("{}-{}.md", safe_name, suffix));
+    }
+
+    // Write a minimal frontmatter skeleton so write_file can merge into it.
+    std::fs::write(&path, "---\nstatus: todo\n---\n")
+        .with_context(|| format!("Failed to create {:?}", path))?;
+
+    write_file(&path, task, extra)?;
+    Ok(path)
+}
+
+/// Sanitize a task description into a safe filename stem.
+/// Strips or replaces characters that are problematic on common filesystems.
+fn sanitize_filename(description: &str) -> String {
+    // Replace filesystem-unsafe characters with a space, then collapse runs.
+    let re = Regex::new(r#"[/\\:*?"<>|#\[\]]"#).unwrap();
+    let sanitized = re.replace_all(description, " ");
+    // Collapse multiple spaces and trim.
+    let collapsed = Regex::new(r" {2,}").unwrap().replace_all(&sanitized, " ");
+    let trimmed = collapsed.trim().to_string();
+    // Truncate to 200 chars to stay well within filesystem limits.
+    trimmed.chars().take(200).collect()
+}
+
+
 ///
 /// Only the fields sharptask owns are updated; all other frontmatter keys
 /// (e.g. `dateCreated`, `dateModified`, `projects`) are preserved verbatim.

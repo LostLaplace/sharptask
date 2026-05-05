@@ -89,6 +89,10 @@ pub enum Direction {
     /// modified task's fields back to its Obsidian TaskNote, and echoes the
     /// (unmodified) task JSON to stdout as required by the hook protocol.
     Hook,
+    /// Taskwarrior on-add hook mode.
+    /// Reads one JSON line from stdin (the new task), creates a TaskNote for it,
+    /// and echoes the task JSON to stdout as required by the hook protocol.
+    OnAdd,
 }
 
 #[derive(Args, Debug)]

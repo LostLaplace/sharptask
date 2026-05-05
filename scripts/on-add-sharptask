@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""
+Taskwarrior on-add hook: creates an Obsidian TaskNote for each new task.
+
+Install:
+    cp scripts/on-add-sharptask ~/.task/hooks/on-add-sharptask
+    chmod +x ~/.task/hooks/on-add-sharptask
+
+The hook reads one line of JSON from stdin (the new task), pipes it to:
+
+    sharptask on-add
+
+which creates a TaskNote in the configured tasknotes_path folder and echoes
+the task JSON back on stdout (as required by the TW on-add protocol).
+"""
+
+import os
+import subprocess
+import sys
+
+
+def main() -> None:
+    raw = sys.stdin.read()
+
+    sharptask_bin = _find_sharptask()
+    if sharptask_bin is None:
+        print("sharptask on-add: binary not found", file=sys.stderr)
+        # Must still echo the task JSON so TW can proceed.
+        print(raw.strip(), flush=True)
+        return
+
+    try:
+        result = subprocess.run(
+            [sharptask_bin, "on-add"],
+            input=raw,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        sys.stdout.write(result.stdout)
+        sys.stdout.flush()
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+    except subprocess.TimeoutExpired:
+        print("sharptask on-add: timed out", file=sys.stderr)
+        print(raw.strip(), flush=True)
+    except Exception as exc:
+        print(f"sharptask on-add: {exc}", file=sys.stderr)
+        print(raw.strip(), flush=True)
+
+
+def _find_sharptask() -> "str | None":
+    import shutil
+
+    found = shutil.which("sharptask")
+    if found:
+        return found
+
+    for candidate in [
+        os.path.expanduser("~/.local/bin/sharptask"),
+        os.path.expanduser("~/.cargo/bin/sharptask"),
+    ]:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    return None
+
+
+if __name__ == "__main__":
+    main()
