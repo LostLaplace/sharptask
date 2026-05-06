@@ -1,0 +1,29 @@
+.sharptask-excluded-list {
+  margin-top: 8px;
+}
+
+.sharptask-excluded-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.sharptask-excluded-label {
+  flex: 1;
+  font-family: var(--font-monospace);
+  font-size: var(--font-smaller);
+  background: var(--background-secondary);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.sharptask-excluded-row button {
+  padding: 2px 6px;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.sharptask-excluded-row button:hover {
+  color: var(--text-error);
+}

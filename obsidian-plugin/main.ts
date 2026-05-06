@@ -1,11 +1,13 @@
 import {
   App,
   FileSystemAdapter,
+  FuzzySuggestModal,
   Notice,
   Plugin,
   PluginSettingTab,
   Setting,
   TFile,
+  TFolder,
 } from "obsidian";
 import { exec } from "child_process";
 import { access, constants } from "fs";
@@ -297,18 +299,78 @@ class SharpTaskSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Excluded folders")
       .setDesc(
-        "Vault-relative folder paths to exclude from sync, one per line " +
-          "(e.g. Attachments, Archive, Templates). Files in these folders " +
-          "will never trigger a sync."
-      )
-      .addTextArea((text) =>
-        text
-          .setPlaceholder("Attachments\nArchive\nTemplates")
-          .setValue(this.plugin.settings.excludedFolders)
-          .onChange(async (value) => {
-            this.plugin.settings.excludedFolders = value;
-            await this.plugin.saveSettings();
-          })
+        "Folders to exclude from sync. Files inside these folders will " +
+          "never trigger a sync."
       );
+
+    const excludedList = containerEl.createDiv("sharptask-excluded-list");
+    const renderExcluded = () => {
+      excludedList.empty();
+      const folders = this.plugin.settings.excludedFolders
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+
+      for (const folder of folders) {
+        const row = excludedList.createDiv("sharptask-excluded-row");
+        row.createSpan({ text: folder, cls: "sharptask-excluded-label" });
+        const removeBtn = row.createEl("button", { text: "✕" });
+        removeBtn.onclick = async () => {
+          const updated = folders.filter((f) => f !== folder);
+          this.plugin.settings.excludedFolders = updated.join("\n");
+          await this.plugin.saveSettings();
+          renderExcluded();
+        };
+      }
+
+      new Setting(excludedList)
+        .addButton((btn) =>
+          btn.setButtonText("Add folder").onClick(() => {
+            new FolderSuggestModal(this.app, async (folder) => {
+              const current = this.plugin.settings.excludedFolders
+                .split("\n")
+                .map((s) => s.trim())
+                .filter((s) => s.length > 0);
+              if (!current.includes(folder.path)) {
+                current.push(folder.path);
+                this.plugin.settings.excludedFolders = current.join("\n");
+                await this.plugin.saveSettings();
+              }
+              renderExcluded();
+            }).open();
+          })
+        );
+    };
+    renderExcluded();
+  }
+}
+
+class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
+  private onChoose: (folder: TFolder) => void;
+
+  constructor(app: App, onChoose: (folder: TFolder) => void) {
+    super(app);
+    this.onChoose = onChoose;
+    this.setPlaceholder("Type to search folders…");
+  }
+
+  getItems(): TFolder[] {
+    const folders: TFolder[] = [];
+    const recurse = (folder: TFolder) => {
+      folders.push(folder);
+      for (const child of folder.children) {
+        if (child instanceof TFolder) recurse(child);
+      }
+    };
+    recurse(this.app.vault.getRoot());
+    return folders.slice(1); // exclude root
+  }
+
+  getItemText(folder: TFolder): string {
+    return folder.path;
+  }
+
+  onChooseItem(folder: TFolder, _evt: MouseEvent | KeyboardEvent): void {
+    this.onChoose(folder);
   }
 }
