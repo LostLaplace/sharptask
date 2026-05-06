@@ -493,8 +493,6 @@ impl TaskWarriorSync {
     }
 
     pub fn tc_to_md(&mut self, task: &ObsidianTask, tz: &chrono_tz::Tz) -> Option<ObsidianTask> {
-        const MIDNIGHT: NaiveTime =
-            chrono::NaiveTime::from_hms_opt(0, 0, 0).expect("Invalid timestamp");
         // Compare the task with its taskchampion version,
         // if taskchampion exists and they don't match, return
         // the new string to put in the markdown

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use clap::{Args, Parser, Subcommand};
 use serde::Deserialize;
-use shellexpand::full;
+use shellexpand;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
