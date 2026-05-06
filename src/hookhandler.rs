@@ -215,6 +215,56 @@ fn find_inline_task_by_uuid(vault_path: &Path, uuid: Uuid) -> Result<Option<(Pat
     Ok(found)
 }
 
+/// Scan `vault_path` for all inline task UUIDs (`[[uuid: <uuid>|`).
+/// Returns the set of UUIDs found across all vault markdown files.
+pub fn find_all_inline_task_uuids(vault_path: &Path) -> Result<std::collections::HashSet<Uuid>> {
+    let pattern = r"\[\[uuid: ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\|";
+
+    let md_types = TypesBuilder::new()
+        .add_defaults()
+        .select("markdown")
+        .build()
+        .expect("Failed to build type matcher");
+
+    let matcher = RegexMatcher::new_line_matcher(pattern)
+        .context("Failed to build inline UUID regex matcher")?;
+
+    let mut uuids = std::collections::HashSet::new();
+    let re = regex::Regex::new(pattern).unwrap();
+
+    for entry in WalkBuilder::new(vault_path)
+        .types(md_types)
+        .build()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().map_or(false, |ft| ft.is_file()))
+    {
+        let path = entry.into_path();
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        if !content.contains("[[uuid:") {
+            continue;
+        }
+
+        let mut line_texts: Vec<String> = Vec::new();
+        let sink = UTF8(|_lnum, text| {
+            line_texts.push(text.to_owned());
+            Ok(true)
+        });
+        let _ = SearcherBuilder::new()
+            .line_number(false)
+            .build()
+            .search_path(&matcher, &path, sink);
+
+        for line in &line_texts {
+            for cap in re.captures_iter(line) {
+                if let Ok(uuid) = cap[1].parse::<Uuid>() {
+                    uuids.insert(uuid);
+                }
+            }
+        }
+    }
+
+    Ok(uuids)
+}
 
 fn task_from_tw_json(v: &Value, tz: &chrono_tz::Tz) -> Result<ObsidianTask> {
     let uuid: Option<Uuid> = v

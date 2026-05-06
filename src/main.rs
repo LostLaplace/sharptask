@@ -246,7 +246,7 @@ fn main() -> Result<()> {
         // ── tc-to-md: create TaskNotes for TC tasks that have none yet ─────────
         if cfg.direction == config::Direction::TcToMd && cfg.file_path.is_none() {
             // Collect UUIDs that already have a TaskNote file.
-            let known_uuids: std::collections::HashSet<taskchampion::Uuid> = {
+            let mut known_uuids: std::collections::HashSet<taskchampion::Uuid> = {
                 WalkBuilder::new(tn_path)
                     .types({
                         let mut b = TypesBuilder::new();
@@ -265,6 +265,14 @@ fn main() -> Result<()> {
                     })
                     .collect()
             };
+
+            // Also skip tasks that already have an inline representation in the vault.
+            if let Some(vault_path) = &cfg.vault_path {
+                match hookhandler::find_all_inline_task_uuids(vault_path) {
+                    Ok(inline_uuids) => known_uuids.extend(inline_uuids),
+                    Err(e) => eprintln!("Warning: could not scan vault for inline tasks: {}", e),
+                }
+            }
 
             let mut sync = TaskWarriorSync::new(&cfg.task_path, &cfg.tz)
                 .context("Failed to open task database")?;
