@@ -28,15 +28,12 @@ interface SharpTaskSettings {
    * will never trigger a sync even if they fall inside watchedFolder.
    */
   excludedFolders: string;
-  /** Debounce delay in milliseconds before triggering a sync after a save. */
-  debounceMs: number;
 }
 
 const DEFAULT_SETTINGS: SharpTaskSettings = {
   sharptaskBin: "sharptask",
   watchedFolder: "",
   excludedFolders: "",
-  debounceMs: 500,
 };
 
 export default class SharpTaskPlugin extends Plugin {
@@ -44,19 +41,25 @@ export default class SharpTaskPlugin extends Plugin {
   private statusBarEl: HTMLElement;
 
   /**
+   * Files that have been edited since the last sync.
+   * Synced when the user navigates away or the window loses focus.
+   */
+  private dirtyFiles = new Set<string>();
+
+  /**
    * Per-file write-back suppression.
    *
    * When sharptask writes the frontmatter back to a file it just synced, that
-   * write triggers another Obsidian "modify" event.  We track files that we
-   * recently synced and ignore the next modify event they emit so we don't
-   * enter an infinite loop.
+   * write triggers another editor-change event.  We track files that we
+   * recently synced and ignore editor-change events they emit during the
+   * cooldown window so we don't mark them dirty again immediately.
    *
    * Maps vault-relative path → timeout handle that clears the entry.
    */
   private writeCooldown = new Map<string, ReturnType<typeof setTimeout>>();
 
-  /** Per-file debounce timers (replaces Obsidian's debounce() helper). */
-  private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** The file that was active just before the current active-leaf-change. */
+  private lastActiveFile: TFile | null = null;
 
   async onload() {
     await this.loadSettings();
@@ -65,34 +68,66 @@ export default class SharpTaskPlugin extends Plugin {
     this.statusBarEl.setText("⚔️");
     this.statusBarEl.setAttr("title", "SharpTask: idle");
 
+    // Mark a file dirty whenever the user edits it.
+    this.registerEvent(
+      this.app.workspace.on("editor-change", (_editor, info) => {
+        const file = info.file;
+        if (!(file instanceof TFile) || file.extension !== "md") return;
+        if (this.writeCooldown.has(file.path)) return; // our own write-back
+        if (this.isWatched(file)) this.dirtyFiles.add(file.path);
+      })
+    );
+
+    // For files modified outside an open editor (e.g. task modals, hook
+    // write-backs from TW), sync immediately on the modify event — but only
+    // if the file is NOT currently open in any editor leaf (open files are
+    // handled by the blur/leaf-change path above to avoid mid-typing syncs).
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
         if (!(file instanceof TFile) || file.extension !== "md") return;
-
-        // Ignore write-back events triggered by sharptask itself.
         if (this.writeCooldown.has(file.path)) return;
-
-        // Only process files inside the configured watched folder.
         if (!this.isWatched(file)) return;
-
-        // Per-file debounce: reset the timer on every rapid edit.
-        const existing = this.debounceTimers.get(file.path);
-        if (existing) clearTimeout(existing);
-        const timer = setTimeout(() => {
-          this.debounceTimers.delete(file.path);
-          this.syncFile(file);
-        }, this.settings.debounceMs);
-        this.debounceTimers.set(file.path, timer);
+        if (this.isFileOpen(file)) return; // handled by editor-change path
+        this.syncFile(file);
       })
     );
+
+    // Sync the previously active file when the user switches tabs/panes.
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (leaf) => {
+        this.syncDirtyFile(this.lastActiveFile);
+
+        const view = leaf?.view as { file?: unknown } | null;
+        const next = view?.file;
+        this.lastActiveFile = next instanceof TFile ? next : null;
+      })
+    );
+
+    // Sync when the user switches to another application.
+    this.registerDomEvent(window, "blur", () => {
+      this.syncDirtyFile(this.lastActiveFile);
+    });
 
     this.addSettingTab(new SharpTaskSettingTab(this.app, this));
   }
 
   onunload() {
-    // Clean up all pending timers.
-    for (const t of this.debounceTimers.values()) clearTimeout(t);
     for (const t of this.writeCooldown.values()) clearTimeout(t);
+  }
+
+  /** Sync `file` if it is in the dirty set; no-op otherwise. */
+  private syncDirtyFile(file: TFile | null): void {
+    if (!file || !this.dirtyFiles.has(file.path)) return;
+    this.dirtyFiles.delete(file.path);
+    this.syncFile(file);
+  }
+
+  /** Returns true if `file` is currently open in any editor leaf. */
+  private isFileOpen(file: TFile): boolean {
+    return this.app.workspace.getLeavesOfType("markdown").some((leaf) => {
+      const view = leaf.view as { file?: unknown };
+      return view.file === file;
+    });
   }
 
   /** Returns true if `file` lives inside the configured watched folder
@@ -265,36 +300,6 @@ class SharpTaskSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("sharptask binary")
-      .setDesc(
-        'Path to the sharptask executable. Leave as "sharptask" to ' +
-          "auto-detect from PATH, ~/.local/bin, and ~/.cargo/bin."
-      )
-      .addText((text) =>
-        text
-          .setPlaceholder("sharptask")
-          .setValue(this.plugin.settings.sharptaskBin)
-          .onChange(async (value) => {
-            this.plugin.settings.sharptaskBin = value.trim() || "sharptask";
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("Debounce delay (ms)")
-      .setDesc(
-        "How long to wait after the last keystroke before syncing. " +
-          "Increase if syncs fire during rapid edits."
-      )
-      .addSlider((slider) =>
-        slider
-          .setLimits(100, 2000, 100)
-          .setValue(this.plugin.settings.debounceMs)
-          .setDynamicTooltip()
-          .onChange(async (value) => {
-            this.plugin.settings.debounceMs = value;
-            await this.plugin.saveSettings();
-          })
-      );
 
     new Setting(containerEl)
       .setName("Excluded folders")
