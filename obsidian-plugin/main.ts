@@ -68,6 +68,11 @@ export default class SharpTaskPlugin extends Plugin {
     this.statusBarEl.setText("⚔️");
     this.statusBarEl.setAttr("title", "SharpTask: idle");
 
+    // Seed lastActiveFile so the first tab-switch can sync if needed.
+    this.app.workspace.onLayoutReady(() => {
+      this.lastActiveFile = this.app.workspace.getActiveFile();
+    });
+
     // Mark a file dirty whenever the user edits it.
     this.registerEvent(
       this.app.workspace.on("editor-change", (_editor, info) => {
