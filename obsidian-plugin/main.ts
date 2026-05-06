@@ -20,6 +20,12 @@ interface SharpTaskSettings {
    * Leave empty to watch the entire vault (not recommended).
    */
   watchedFolder: string;
+  /**
+   * Newline-separated list of vault-relative folder paths to exclude from
+   * sync (e.g. "Attachments\nArchive\nTemplates"). Files under these folders
+   * will never trigger a sync even if they fall inside watchedFolder.
+   */
+  excludedFolders: string;
   /** Debounce delay in milliseconds before triggering a sync after a save. */
   debounceMs: number;
 }
@@ -27,6 +33,7 @@ interface SharpTaskSettings {
 const DEFAULT_SETTINGS: SharpTaskSettings = {
   sharptaskBin: "sharptask",
   watchedFolder: "",
+  excludedFolders: "",
   debounceMs: 500,
 };
 
@@ -86,14 +93,23 @@ export default class SharpTaskPlugin extends Plugin {
     for (const t of this.writeCooldown.values()) clearTimeout(t);
   }
 
-  /** Returns true if `file` lives inside the configured watched folder. */
+  /** Returns true if `file` lives inside the configured watched folder
+   *  and is not under any excluded folder. */
   private isWatched(file: TFile): boolean {
     const folder = this.settings.watchedFolder.trim().replace(/\/+$/, "");
-    if (!folder) return true; // no filter configured — watch everything
-    return (
-      file.path === folder ||
-      file.path.startsWith(folder + "/")
-    );
+    if (folder && file.path !== folder && !file.path.startsWith(folder + "/")) {
+      return false;
+    }
+
+    const excluded = this.settings.excludedFolders
+      .split("\n")
+      .map((s) => s.trim().replace(/\/+$/, ""))
+      .filter((s) => s.length > 0);
+    for (const ex of excluded) {
+      if (file.path === ex || file.path.startsWith(ex + "/")) return false;
+    }
+
+    return true;
   }
 
   private syncFile(file: TFile): void {
@@ -274,6 +290,23 @@ class SharpTaskSettingTab extends PluginSettingTab {
           .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.settings.debounceMs = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Excluded folders")
+      .setDesc(
+        "Vault-relative folder paths to exclude from sync, one per line " +
+          "(e.g. Attachments, Archive, Templates). Files in these folders " +
+          "will never trigger a sync."
+      )
+      .addTextArea((text) =>
+        text
+          .setPlaceholder("Attachments\nArchive\nTemplates")
+          .setValue(this.plugin.settings.excludedFolders)
+          .onChange(async (value) => {
+            this.plugin.settings.excludedFolders = value;
             await this.plugin.saveSettings();
           })
       );
