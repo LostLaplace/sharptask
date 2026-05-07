@@ -119,9 +119,11 @@ fn main() -> Result<()> {
                 }
             }
         }
-        let result = update_obsidian_tasks(&path, &updates);
-        if result.is_err() {
-            errors += 1;
+        if !updates.is_empty() {
+            let result = update_obsidian_tasks(&path, &updates);
+            if result.is_err() {
+                errors += 1;
+            }
         }
     }
 
