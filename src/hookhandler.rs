@@ -226,9 +226,6 @@ pub fn find_all_inline_task_uuids(vault_path: &Path) -> Result<std::collections:
         .build()
         .expect("Failed to build type matcher");
 
-    let matcher = RegexMatcher::new_line_matcher(pattern)
-        .context("Failed to build inline UUID regex matcher")?;
-
     let mut uuids = std::collections::HashSet::new();
     let re = regex::Regex::new(pattern).unwrap();
 
@@ -244,21 +241,9 @@ pub fn find_all_inline_task_uuids(vault_path: &Path) -> Result<std::collections:
             continue;
         }
 
-        let mut line_texts: Vec<String> = Vec::new();
-        let sink = UTF8(|_lnum, text| {
-            line_texts.push(text.to_owned());
-            Ok(true)
-        });
-        let _ = SearcherBuilder::new()
-            .line_number(false)
-            .build()
-            .search_path(&matcher, &path, sink);
-
-        for line in &line_texts {
-            for cap in re.captures_iter(line) {
-                if let Ok(uuid) = cap[1].parse::<Uuid>() {
-                    uuids.insert(uuid);
-                }
+        for cap in re.captures_iter(&content) {
+            if let Ok(uuid) = cap[1].parse::<Uuid>() {
+                uuids.insert(uuid);
             }
         }
     }
