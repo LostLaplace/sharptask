@@ -41,8 +41,13 @@ struct Frontmatter {
     cancelled: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tags: Option<Vec<String>>,
+    /// Singular project field (older/custom format).
     #[serde(skip_serializing_if = "Option::is_none")]
     project: Option<String>,
+    /// List-style project field used by the TaskNotes plugin (e.g. `projects: ["[[My Project]]"]`).
+    /// When present, the first entry is used. Takes precedence over `project`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    projects: Option<Vec<String>>,
     /// Taskwarrior UUID — written by sharptask to track the TC representation.
     #[serde(skip_serializing_if = "Option::is_none")]
     tc_uuid: Option<String>,
@@ -221,8 +226,14 @@ pub fn parse_file(
         .canceled(fm.cancelled.as_deref().and_then(parse_date))
         .tags(&fm.tags.unwrap_or_default())
         .project(
-            fm.tc_project
-                .or_else(|| fm.project.as_deref().map(normalize_project)),
+            fm.tc_project.or_else(|| {
+                // Prefer the list-style `projects` field (TaskNotes plugin format),
+                // fall back to singular `project`.
+                let raw = fm.projects
+                    .and_then(|v| v.into_iter().next())
+                    .or(fm.project);
+                raw.as_deref().map(normalize_project)
+            }),
         )
         // Dates parsed from the file are already in local time — set tz without
         // re-converting (with_tz would treat them as UTC and double-convert).
@@ -541,6 +552,24 @@ mod tests {
     #[test]
     fn test_normalize_project_wikilink_alias() {
         assert_eq!(normalize_project("[[Recovery Mode|rm]]"), "rm");
+    }
+
+    #[test]
+    fn test_parse_projects_list() {
+        // TaskNotes plugin format: `projects` as a YAML list.
+        let content = "---\ntitle: My task\nprojects:\n  - \"[[Recovery Mode]]\"\n---\n";
+        let f = write_temp_file(content);
+        let (task, _) = parse_file(f.path(), &chrono_tz::UTC).unwrap().unwrap();
+        assert_eq!(task.project.as_deref(), Some("Recovery.Mode"));
+    }
+
+    #[test]
+    fn test_projects_list_takes_precedence_over_project() {
+        // `projects` list wins over singular `project` field.
+        let content = "---\ntitle: My task\nproject: \"[[Other]]\"\nprojects:\n  - \"[[Recovery Mode]]\"\n---\n";
+        let f = write_temp_file(content);
+        let (task, _) = parse_file(f.path(), &chrono_tz::UTC).unwrap().unwrap();
+        assert_eq!(task.project.as_deref(), Some("Recovery.Mode"));
     }
 
     #[test]
