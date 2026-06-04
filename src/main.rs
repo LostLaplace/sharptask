@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
 use grep::{regex::RegexMatcher, searcher::Searcher, searcher::sinks};
 use ignore::{WalkBuilder, types::TypesBuilder};
-use tasksync::{TaskWarriorSync, UpdateContext, update_obsidian_tasks};
+use tasksync::{OrphanedTask, TaskWarriorSync, UpdateContext, update_obsidian_tasks};
 
 mod config;
 mod hookhandler;
@@ -301,9 +301,90 @@ fn main() -> Result<()> {
         }
     }
 
+    // ── md-to-tc reconcile: detect TC tasks whose obsidian source vanished ────
+    if cfg.direction == config::Direction::MdToTc
+        && cfg.file_path.is_none()
+        && cfg.uuid.is_none()
+    {
+        if let Some(vault_path) = cfg.vault_path.as_ref() {
+            let mut sync = TaskWarriorSync::new(&cfg.task_path, &cfg.tz)
+                .context("Failed to open task database")?;
+            match sync.find_orphaned_obsidian_tasks(vault_path, cfg.tasknotes_path.as_deref()) {
+                Ok(orphans) if !orphans.is_empty() => {
+                    println!(
+                        "{}",
+                        format!(
+                            "\nFound {} TC task(s) whose obsidian source is missing.",
+                            orphans.len()
+                        )
+                        .blue()
+                    );
+                    for orphan in orphans {
+                        if let Err(e) = prompt_orphan(&mut sync, &orphan) {
+                            println!("  {}", format!("Reconcile error: {}", e).red());
+                            errors += 1;
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Warning: orphan scan failed: {}", e);
+                }
+            }
+        }
+    }
+
     if errors > 0 {
         return Err(anyhow!("{errors} files failed to update"));
     } else {
         return Ok(());
+    }
+}
+
+/// Interactive resolution for a single orphaned task.
+/// Reads a single character from stdin: m=mark done, d=delete, s=skip.
+fn prompt_orphan(sync: &mut TaskWarriorSync, orphan: &OrphanedTask) -> Result<()> {
+    use std::io::{BufRead, Write};
+
+    let kind = if orphan.is_tasknote { "TaskNote" } else { "inline" };
+    println!();
+    println!(
+        "  {} {}",
+        format!("[{}]", kind).yellow(),
+        orphan.description.bold()
+    );
+    println!(
+        "    uuid: {}  expected at: {}",
+        orphan.uuid.to_string().dimmed(),
+        orphan.expected_path.display().to_string().dimmed()
+    );
+
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    loop {
+        print!("    [m]ark done / [d]elete / [s]kip? ");
+        stdout.flush().ok();
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line)? == 0 {
+            // EOF (e.g. piped run with no answers): treat as skip.
+            println!();
+            return Ok(());
+        }
+        match line.trim().chars().next() {
+            Some('m') | Some('M') => {
+                sync.mark_done(orphan.uuid)?;
+                println!("    {}", "marked done".green());
+                return Ok(());
+            }
+            Some('d') | Some('D') => {
+                sync.delete_task(orphan.uuid)?;
+                println!("    {}", "deleted".red());
+                return Ok(());
+            }
+            Some('s') | Some('S') | None => {
+                return Ok(());
+            }
+            _ => {} // unrecognized — re-prompt
+        }
     }
 }

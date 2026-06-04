@@ -1,6 +1,6 @@
 [package]
 name = "sharptask"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
 description = "Sync obsidian tasks plugin with taskwarrior"
 
@@ -22,6 +22,7 @@ shellexpand = "3.1.1"
 unicode-segmentation = "1.12.0"
 paste = "1.0.15"
 taskchampion = { version = "2.0.3", default-features = false }
+urlencoding = "2"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

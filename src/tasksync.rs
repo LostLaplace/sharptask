@@ -91,10 +91,28 @@ impl TaskWarriorSync {
         }
 
         if let Some(mut tc_task) = existing_tc_task {
-                // If equal, skip processing
+                // Equal task — fields are in sync. The only thing that may
+                // still need updating is the obsidian:// annotation (e.g. legacy
+                // stem-only format, or the source file moved). Refresh it if
+                // needed and bail out either way.
                 if *task == tc_task {
                     println!("{}", "      No changes".yellow());
-                    return Ok(false);
+                    if let Some(vault) = vault_path.as_ref() {
+                        Self::set_obsidian_annotation(
+                            &mut tc_task,
+                            &mut ops,
+                            file.as_ref(),
+                            vault.as_ref(),
+                        )?;
+                    }
+                    if ops.is_empty() {
+                        return Ok(false);
+                    }
+                    return self
+                        .replica
+                        .commit_operations(ops)
+                        .map(|_| false)
+                        .context("Failed committing annotation refresh");
                 }
 
                 // Status update
@@ -336,6 +354,14 @@ impl TaskWarriorSync {
                     tc_task.set_value("project", task.project.clone(), &mut ops)?;
                 }
 
+            // Ensure the task carries an up-to-date obsidian:// annotation
+            // pointing at its current source file. Tasks created before this
+            // feature had no annotation, and tasks whose source file moved
+            // need the annotation refreshed.
+            if let Some(vault) = vault_path.as_ref() {
+                Self::set_obsidian_annotation(&mut tc_task, &mut ops, file.as_ref(), vault.as_ref())?;
+            }
+
             if ops.is_empty() {
                 return Ok(false);
             }
@@ -434,19 +460,8 @@ impl TaskWarriorSync {
                 tc_task.set_value(tag_str, Some("".to_string()), &mut ops)?;
             }
 
-            if let Some(file_name) = file.as_ref().file_stem() {
-                if let Some(vault) = vault_path {
-                    if let Some(vault_name) = vault.as_ref().file_name() {
-                        let timestamp = Utc::now().timestamp();
-                        let annotation = String::from(format!("annotation_{timestamp}"));
-                        let task_open = String::from(format!(
-                            "obsidian://open?vault={}&file={}",
-                            vault_name.to_str().unwrap(),
-                            file_name.to_str().unwrap()
-                        ));
-                        tc_task.set_value(annotation, Some(task_open), &mut ops)?;
-                    }
-                }
+            if let Some(vault) = vault_path.as_ref() {
+                Self::set_obsidian_annotation(&mut tc_task, &mut ops, file.as_ref(), vault.as_ref())?;
             }
 
             self.replica
@@ -455,6 +470,74 @@ impl TaskWarriorSync {
 
             return Ok(true);
         }
+    }
+
+    /// Build an `obsidian://open?vault=…&file=…` URI for the given vault-relative
+    /// file path. Returns `None` if either path lacks a usable name.
+    fn build_obsidian_uri(file: &Path, vault: &Path) -> Option<String> {
+        let vault_name = vault.file_name()?.to_str()?;
+        let rel = file.strip_prefix(vault).unwrap_or(file);
+        let rel_str = rel.to_str()?;
+        Some(format!(
+            "obsidian://open?vault={}&file={}",
+            urlencoding::encode(vault_name),
+            urlencoding::encode(rel_str),
+        ))
+    }
+
+    /// Replace any existing `obsidian://` annotation on the task with one
+    /// pointing at `file` (vault-relative). Other annotations are preserved.
+    fn set_obsidian_annotation(
+        tc_task: &mut taskchampion::Task,
+        ops: &mut taskchampion::Operations,
+        file: &Path,
+        vault: &Path,
+    ) -> Result<()> {
+        let Some(new_uri) = Self::build_obsidian_uri(file, vault) else {
+            return Ok(());
+        };
+
+        // Collect existing obsidian:// annotation keys; clear them.
+        let stale: Vec<String> = tc_task
+            .get_annotations()
+            .filter(|a| a.description.starts_with("obsidian://"))
+            .map(|a| format!("annotation_{}", a.entry.timestamp()))
+            .collect();
+        // Skip rewrite if the only existing obsidian:// annotation already matches.
+        let already_correct = stale.len() == 1
+            && tc_task
+                .get_annotations()
+                .find(|a| a.description.starts_with("obsidian://"))
+                .map(|a| a.description == new_uri)
+                .unwrap_or(false);
+        if already_correct {
+            return Ok(());
+        }
+        for key in stale {
+            tc_task.set_value(key, None, ops)?;
+        }
+
+        // Pick a fresh timestamp; bump until it doesn't collide with an existing
+        // annotation key (collision is rare but possible within the same second).
+        let mut ts = Utc::now().timestamp();
+        while tc_task.get_value(format!("annotation_{ts}")).is_some() {
+            ts += 1;
+        }
+        tc_task.set_value(format!("annotation_{ts}"), Some(new_uri), ops)?;
+        Ok(())
+    }
+
+    /// Parse a previously written annotation back into a vault-relative path.
+    /// Returns `None` for annotations that aren't ours or that we can't parse.
+    fn parse_obsidian_annotation(annotation: &str) -> Option<PathBuf> {
+        let rest = annotation.strip_prefix("obsidian://open?")?;
+        for pair in rest.split('&') {
+            if let Some(val) = pair.strip_prefix("file=") {
+                let decoded = urlencoding::decode(val).ok()?.into_owned();
+                return Some(PathBuf::from(decoded));
+            }
+        }
+        None
     }
 
     /// Returns the `reviewed` UDA date set by `tasksh review`, if present.
@@ -579,6 +662,174 @@ impl TaskWarriorSync {
             })
             .collect()
     }
+
+    /// Mark the task as completed, stamping the end date to now.
+    pub fn mark_done(&mut self, uuid: Uuid) -> Result<()> {
+        use taskchampion::Status as TcStatus;
+        let mut ops = taskchampion::Operations::new();
+        let mut tc_task = self
+            .replica
+            .get_task(uuid)
+            .context("Failed to look up task")?
+            .ok_or_else(|| anyhow::anyhow!("Task {} not found in TC", uuid))?;
+        tc_task.set_status(TcStatus::Completed, &mut ops)?;
+        tc_task.set_value("end", Some(Utc::now().timestamp().to_string()), &mut ops)?;
+        self.replica
+            .commit_operations(ops)
+            .context("Failed to commit done status")
+    }
+
+    /// Mark the task as deleted in TC (taskchampion's tombstone state).
+    pub fn delete_task(&mut self, uuid: Uuid) -> Result<()> {
+        use taskchampion::Status as TcStatus;
+        let mut ops = taskchampion::Operations::new();
+        let mut tc_task = self
+            .replica
+            .get_task(uuid)
+            .context("Failed to look up task")?
+            .ok_or_else(|| anyhow::anyhow!("Task {} not found in TC", uuid))?;
+        tc_task.set_status(TcStatus::Deleted, &mut ops)?;
+        self.replica
+            .commit_operations(ops)
+            .context("Failed to commit delete status")
+    }
+
+    /// Walk pending TC tasks and return those that have an `obsidian://`
+    /// annotation but no longer have a live representation in the vault.
+    ///
+    /// A task is considered orphaned when its UUID appears nowhere:
+    ///   - not in any inline `[[uuid: <uuid>|⚔️]]` reference in the vault,
+    ///   - not in the `tc_uuid:` frontmatter of any TaskNote (when
+    ///     `tasknotes_path` is set).
+    ///
+    /// Uses a "scan the recorded file first, then fall back to vault-wide"
+    /// strategy for inline tasks; cheap when the task is still where the
+    /// annotation says it is, correct when the user has moved it.
+    pub fn find_orphaned_obsidian_tasks(
+        &mut self,
+        vault_path: &Path,
+        tasknotes_path: Option<&Path>,
+    ) -> Result<Vec<OrphanedTask>> {
+        use taskchampion::Status as TcStatus;
+
+        let all = self
+            .replica
+            .all_tasks()
+            .context("Failed to load all tasks")?;
+
+        // UUID sets are built lazily — most runs find no orphans and never
+        // need to walk the vault.
+        let mut vault_inline: Option<std::collections::HashSet<Uuid>> = None;
+        let mut tasknote_uuids: Option<std::collections::HashSet<Uuid>> = None;
+
+        let mut orphans = Vec::new();
+
+        for (uuid, tc_task) in all {
+            if tc_task.get_status() != TcStatus::Pending {
+                continue;
+            }
+
+            let Some(rel_path) = tc_task
+                .get_annotations()
+                .find_map(|a| Self::parse_obsidian_annotation(&a.description))
+            else {
+                continue;
+            };
+
+            // Fast path for inline tasks: read just the file the annotation
+            // names and look for the UUID. Skip when the path is a bare stem
+            // (legacy annotation format) or when it resolves into the
+            // TaskNotes folder (different check).
+            let abs_path = vault_path.join(&rel_path);
+            let looks_like_tasknote = tasknotes_path
+                .map(|tn| abs_path.starts_with(tn))
+                .unwrap_or(false);
+            let path_looks_resolvable = rel_path.extension().is_some()
+                || rel_path.components().count() > 1;
+
+            if !looks_like_tasknote && path_looks_resolvable {
+                let needle = format!("[[uuid: {}|", uuid);
+                if std::fs::read_to_string(&abs_path)
+                    .map(|c| c.contains(&needle))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+            }
+
+            // Slow path: walk the vault (and TaskNotes folder) once, cache.
+            let inline_set = match &vault_inline {
+                Some(s) => s,
+                None => {
+                    let s = crate::hookhandler::find_all_inline_task_uuids(vault_path)
+                        .unwrap_or_default();
+                    vault_inline = Some(s);
+                    vault_inline.as_ref().unwrap()
+                }
+            };
+            if inline_set.contains(&uuid) {
+                continue;
+            }
+
+            if let Some(tn_path) = tasknotes_path {
+                let tn_set = match &tasknote_uuids {
+                    Some(s) => s,
+                    None => {
+                        let s = collect_tasknote_uuids(tn_path, &self.tz);
+                        tasknote_uuids = Some(s);
+                        tasknote_uuids.as_ref().unwrap()
+                    }
+                };
+                if tn_set.contains(&uuid) {
+                    continue;
+                }
+            }
+
+            orphans.push(OrphanedTask {
+                uuid,
+                description: tc_task.get_description().to_string(),
+                expected_path: rel_path,
+                is_tasknote: looks_like_tasknote,
+            });
+        }
+
+        Ok(orphans)
+    }
+}
+
+/// Walk a TaskNotes folder and collect every `tc_uuid` found in frontmatter.
+fn collect_tasknote_uuids(
+    tn_path: &Path,
+    tz: &chrono_tz::Tz,
+) -> std::collections::HashSet<Uuid> {
+    use ignore::{WalkBuilder, types::TypesBuilder};
+    let md_types = TypesBuilder::new()
+        .add_defaults()
+        .select("markdown")
+        .build()
+        .expect("Failed to build type matcher");
+    WalkBuilder::new(tn_path)
+        .types(md_types)
+        .build()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().map_or(false, |ft| ft.is_file()))
+        .filter_map(|e| {
+            crate::tasknotes::parse_file(e.path(), tz)
+                .ok()
+                .flatten()
+                .and_then(|(t, _)| t.uuid)
+        })
+        .collect()
+}
+
+/// A task that is still pending in TC but whose obsidian source we couldn't
+/// find. Returned by `find_orphaned_obsidian_tasks`.
+#[derive(Debug, Clone)]
+pub struct OrphanedTask {
+    pub uuid: Uuid,
+    pub description: String,
+    pub expected_path: PathBuf,
+    pub is_tasknote: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -809,7 +1060,7 @@ mod tests {
                 None
             })
             .unwrap();
-        assert_eq!("obsidian://open?vault=test2&file=test1", annotation);
+        assert_eq!("obsidian://open?vault=test2&file=test1.md", annotation);
     }
 
     #[test]
