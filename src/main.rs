@@ -107,24 +107,27 @@ fn main() -> Result<()> {
             let mut sync = TaskWarriorSync::new(&cfg.task_path, &cfg.tz)
                 .context("Failed to open task database")
                 .expect("Should be able to access task database");
+
+            // TC Deleted is the strongest signal in either direction: drop the
+            // inline line so the vault catches up. This runs before md-to-tc
+            // so a `task <id> delete` isn't undone by re-syncing the (still
+            // pending) inline checkbox back into TC.
+            if let Some(uuid) = line.task.uuid {
+                if sync.is_deleted_in_tc(uuid) {
+                    updates.push(UpdateContext {
+                        delete: true,
+                        ..line.clone()
+                    });
+                    continue;
+                }
+            }
+
             if cfg.direction == config::Direction::MdToTc {
                 let update = sync.md_to_tc(&mut line.task, path.clone(), cfg.vault_path.clone());
                 if update.is_ok() && update.unwrap() {
                     updates.push(line.clone());
                 }
             } else {
-                // tc-to-md: if the TC task is gone (Deleted), remove the
-                // inline line entirely. Otherwise update it in place when TC
-                // and the file disagree.
-                if let Some(uuid) = line.task.uuid {
-                    if sync.is_deleted_in_tc(uuid) {
-                        updates.push(UpdateContext {
-                            delete: true,
-                            ..line.clone()
-                        });
-                        continue;
-                    }
-                }
                 let update = sync.tc_to_md(&line.task, &cfg.tz);
                 if let Some(task) = update {
                     let updated_line = UpdateContext { task, ..line.clone() };
@@ -208,6 +211,23 @@ fn main() -> Result<()> {
                 .context("Failed to open task database")
                 .expect("Should be able to access task database");
 
+            // TC Deleted wins over the file in either direction — otherwise
+            // a stale `status: todo` TaskNote on disk would resurrect a task
+            // that the user explicitly deleted in TW.
+            if let Some(uuid) = task.uuid {
+                if sync.is_deleted_in_tc(uuid) {
+                    println!(
+                        "  {}",
+                        format!("Deleting TaskNote (TC task is deleted): {}", path.display()).red()
+                    );
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        println!("  {}", format!("Failed to delete {}: {}", path.display(), e).red());
+                        errors += 1;
+                    }
+                    continue;
+                }
+            }
+
             if cfg.direction == config::Direction::MdToTc {
                 match sync.md_to_tc(&mut task, &path, cfg.vault_path.as_ref()) {
                     Ok(true) => {
@@ -242,22 +262,6 @@ fn main() -> Result<()> {
                     }
                 }
             } else {
-                // tc-to-md: if TC has the task marked Deleted, remove the
-                // TaskNote file entirely instead of writing it back.
-                if let Some(uuid) = task.uuid {
-                    if sync.is_deleted_in_tc(uuid) {
-                        println!(
-                            "  {}",
-                            format!("Deleting TaskNote (TC task is deleted): {}", path.display()).red()
-                        );
-                        if let Err(e) = std::fs::remove_file(&path) {
-                            println!("  {}", format!("Failed to delete {}: {}", path.display(), e).red());
-                            errors += 1;
-                        }
-                        continue;
-                    }
-                }
-
                 let updated_task_opt = sync.tc_to_md(&task, &cfg.tz);
                 // Check if the reviewed date changed in TC independently of other fields.
                 let tc_reviewed = task.uuid.and_then(|uuid| sync.get_reviewed(uuid));
