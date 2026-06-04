@@ -99,6 +99,36 @@ pub fn run(
 
     let obsidian_task = task_from_tw_json(&new_task_value, tz)?;
 
+    // When TW marks the task deleted, remove the obsidian source instead of
+    // writing `status: cancelled` back to a file the user expects to be gone.
+    let tw_deleted = new_task_value
+        .get("status")
+        .and_then(|v| v.as_str())
+        .map(|s| s == "deleted")
+        .unwrap_or(false);
+
+    if tw_deleted {
+        if let Some(tn_path) = tasknotes_path {
+            if let Some(file_path) = find_tasknote_by_uuid(tn_path, uuid)? {
+                std::fs::remove_file(&file_path)
+                    .with_context(|| format!("Failed to delete TaskNote {}", file_path.display()))?;
+            }
+        }
+        if let Some(vpath) = vault_path {
+            if let Some((file_path, line_num)) = find_inline_task_by_uuid(vpath, uuid)? {
+                let update = UpdateContext {
+                    line: line_num,
+                    task: obsidian_task.clone(),
+                    delete: true,
+                };
+                update_obsidian_tasks(&file_path, &[update]).with_context(|| {
+                    format!("Failed to drop inline task in {}", file_path.display())
+                })?;
+            }
+        }
+        return Ok(new_task_json);
+    }
+
     if let Some(tn_path) = tasknotes_path {
         if let Some(file_path) = find_tasknote_by_uuid(tn_path, uuid)? {
             // Re-parse the existing file to get the Extra fields we want to preserve
