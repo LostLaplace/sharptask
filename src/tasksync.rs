@@ -663,6 +663,18 @@ impl TaskWarriorSync {
             .collect()
     }
 
+    /// Return true if the task with this UUID exists in TC and is in the
+    /// Deleted state. Returns false for missing tasks or any other status.
+    pub fn is_deleted_in_tc(&mut self, uuid: Uuid) -> bool {
+        use taskchampion::Status as TcStatus;
+        self.replica
+            .get_task(uuid)
+            .ok()
+            .flatten()
+            .map(|t| t.get_status() == TcStatus::Deleted)
+            .unwrap_or(false)
+    }
+
     /// Mark the task as completed, stamping the end date to now.
     pub fn mark_done(&mut self, uuid: Uuid) -> Result<()> {
         use taskchampion::Status as TcStatus;
@@ -836,6 +848,10 @@ pub struct OrphanedTask {
 pub struct UpdateContext {
     pub line: usize,
     pub task: ObsidianTask,
+    /// When true, the line is removed from the file entirely instead of
+    /// being replaced with the rendered task. Used when TC reports the task
+    /// as deleted so the inline checkbox vanishes from the vault note.
+    pub delete: bool,
 }
 
 pub fn update_obsidian_tasks<T: AsRef<Path>>(path: T, updates: &[UpdateContext]) -> Result<()> {
@@ -849,21 +865,33 @@ pub fn update_obsidian_tasks<T: AsRef<Path>>(path: T, updates: &[UpdateContext])
     let file_string = fs::read_to_string(&path)?;
     let mut file_lines: Vec<&str> = file_string.lines().collect();
 
-    // Iterate through updates and replace those lines
+    // Build replacement strings for non-delete updates and collect the set of
+    // line indexes to drop entirely.
     let mut tasks = Vec::with_capacity(updates.len());
+    let mut drops: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for update in updates {
+        if update.delete {
+            drops.insert(update.line);
+            tasks.push(String::new()); // placeholder so indexes line up
+            continue;
+        }
         let trimmed = file_lines[update.line].trim_start();
         let whitespace_len = file_lines[update.line].len() - trimmed.len();
         let whitespace = &file_lines[update.line][0..whitespace_len];
         tasks.push(format!("{}{}", whitespace, update.task.to_string()));
     }
     for (index, update) in updates.iter().enumerate() {
-        file_lines[update.line] = &tasks[index];
+        if !update.delete {
+            file_lines[update.line] = &tasks[index];
+        }
     }
 
-    // Write to temp file
+    // Write to temp file, skipping dropped lines
     let mut buf_writer = BufWriter::new(std::fs::File::create(&temp_path)?);
-    for line in file_lines {
+    for (idx, line) in file_lines.iter().enumerate() {
+        if drops.contains(&idx) {
+            continue;
+        }
         buf_writer.write(line.as_bytes())?;
         write!(buf_writer, "\n")?;
     }
@@ -910,10 +938,12 @@ mod tests {
             UpdateContext {
                 line: 1,
                 task: obsidian_task.clone(),
+                delete: false,
             },
             UpdateContext {
                 line: 3,
                 task: obsidian_task.clone(),
+                delete: false,
             },
         ];
 
@@ -925,6 +955,36 @@ mod tests {
             "This is a normal line\n- [x] This is a passed test\nAnother normal line\n    - [x] This is a passed test\n"
         );
         std::fs::remove_file("test.md");
+    }
+
+    #[test]
+    fn test_file_delete_line() {
+        let path = "test_delete.md";
+        let _ = std::fs::remove_file(path);
+        let mut test_file = std::fs::File::create_new(path).unwrap();
+        writeln!(test_file, "Header").unwrap();
+        writeln!(test_file, "- [ ] Keep me").unwrap();
+        writeln!(test_file, "- [ ] Drop me").unwrap();
+        writeln!(test_file, "Footer").unwrap();
+
+        let keep = ObsidianTaskBuilder::new()
+            .description("Keep me")
+            .status(taskparser::Status::Pending)
+            .build();
+        let drop = ObsidianTaskBuilder::new()
+            .description("Drop me")
+            .status(taskparser::Status::Pending)
+            .build();
+
+        let context = vec![
+            UpdateContext { line: 1, task: keep, delete: false },
+            UpdateContext { line: 2, task: drop, delete: true },
+        ];
+
+        assert!(update_obsidian_tasks(path, &context).is_ok());
+        let content = std::fs::read_to_string(path).unwrap();
+        assert_eq!(content, "Header\n- [ ] Keep me\nFooter\n");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

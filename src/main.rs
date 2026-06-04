@@ -85,6 +85,7 @@ fn main() -> Result<()> {
                 lines.push(UpdateContext {
                     line: usize::try_from(offset - 1).expect("Offset should fit"),
                     task,
+                    delete: false,
                 });
             } else {
                 println!("  {}", format!("{} {}", "Failed to parse:", text).red());
@@ -112,9 +113,21 @@ fn main() -> Result<()> {
                     updates.push(line.clone());
                 }
             } else {
+                // tc-to-md: if the TC task is gone (Deleted), remove the
+                // inline line entirely. Otherwise update it in place when TC
+                // and the file disagree.
+                if let Some(uuid) = line.task.uuid {
+                    if sync.is_deleted_in_tc(uuid) {
+                        updates.push(UpdateContext {
+                            delete: true,
+                            ..line.clone()
+                        });
+                        continue;
+                    }
+                }
                 let update = sync.tc_to_md(&line.task, &cfg.tz);
                 if let Some(task) = update {
-                    let updated_line = UpdateContext { task, ..*line };
+                    let updated_line = UpdateContext { task, ..line.clone() };
                     updates.push(updated_line);
                 }
             }
@@ -229,6 +242,22 @@ fn main() -> Result<()> {
                     }
                 }
             } else {
+                // tc-to-md: if TC has the task marked Deleted, remove the
+                // TaskNote file entirely instead of writing it back.
+                if let Some(uuid) = task.uuid {
+                    if sync.is_deleted_in_tc(uuid) {
+                        println!(
+                            "  {}",
+                            format!("Deleting TaskNote (TC task is deleted): {}", path.display()).red()
+                        );
+                        if let Err(e) = std::fs::remove_file(&path) {
+                            println!("  {}", format!("Failed to delete {}: {}", path.display(), e).red());
+                            errors += 1;
+                        }
+                        continue;
+                    }
+                }
+
                 let updated_task_opt = sync.tc_to_md(&task, &cfg.tz);
                 // Check if the reviewed date changed in TC independently of other fields.
                 let tc_reviewed = task.uuid.and_then(|uuid| sync.get_reviewed(uuid));

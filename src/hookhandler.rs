@@ -121,6 +121,7 @@ pub fn run(
             let update = UpdateContext {
                 line: line_num,
                 task: obsidian_task.clone(),
+                delete: false,
             };
             update_obsidian_tasks(&file_path, &[update])
                 .with_context(|| format!("Failed to update inline task in {}", file_path.display()))?;
