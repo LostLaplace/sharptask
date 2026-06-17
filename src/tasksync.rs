@@ -379,6 +379,11 @@ impl TaskWarriorSync {
             tc_task.set_status(task.status.clone().into(), &mut ops)?;
             tc_task.set_description(task.description.clone(), &mut ops)?;
             tc_task.set_value(
+                "entry",
+                Some(Utc::now().timestamp().to_string()),
+                &mut ops,
+            )?;
+            tc_task.set_value(
                 "due",
                 task.due.map(|x| {
                     x.and_local_timezone(self.tz)
