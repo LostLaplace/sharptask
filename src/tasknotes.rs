@@ -13,6 +13,11 @@ use crate::taskparser::{ObsidianTask, ObsidianTaskBuilder, Priority, Status};
 pub struct TaskNotesExtra {
     /// Date the task was last reviewed via `tasksh review`.
     pub reviewed: Option<NaiveDate>,
+    /// The exact `status:` string that was in the file when it was parsed.
+    /// TaskNotes supports custom statuses (`next_action`, `in_progress`, …)
+    /// that all collapse to `Status::Pending` here; we keep the raw string
+    /// so that round-tripping doesn't clobber a custom status with `todo`.
+    pub raw_status: Option<String>,
 }
 
 /// YAML frontmatter fields recognized by the TaskNotes Obsidian plugin.
@@ -244,6 +249,7 @@ pub fn parse_file(
         reviewed: fm.reviewed.as_deref().and_then(|s| {
             NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()
         }),
+        raw_status: fm.status.clone(),
     };
 
     Ok(Some((task, extra)))
@@ -335,7 +341,14 @@ pub fn write_file(path: &Path, task: &ObsidianTask, extra: &TaskNotesExtra) -> R
         set_str!("title", strip_inline_tags(&task.description));
     }
 
-    set_str!("status", status_to_str(&task.status).to_string());
+    // Preserve a custom raw status (e.g. `next_action`, `in_progress`) when
+    // it still corresponds to the same coarse bucket; otherwise fall through
+    // to the normalized name so TC-driven status changes still propagate.
+    let status_str = match &extra.raw_status {
+        Some(raw) if parse_status(Some(raw)) == task.status => raw.clone(),
+        _ => status_to_str(&task.status).to_string(),
+    };
+    set_str!("status", status_str);
 
     match priority_to_str(&task.priority) {
         Some(p) => set_str!("priority", p.to_string()),
@@ -474,6 +487,32 @@ mod tests {
     }
 
     #[test]
+    fn test_write_preserves_custom_status() {
+        let content =
+            "---\ntitle: A task\nstatus: next_action\n---\n";
+        let f = write_temp_file(content);
+        let (task, extra) = parse_file(f.path(), &chrono_tz::UTC).unwrap().unwrap();
+        assert_eq!(extra.raw_status.as_deref(), Some("next_action"));
+        write_file(f.path(), &task, &extra).unwrap();
+        let raw = std::fs::read_to_string(f.path()).unwrap();
+        assert!(raw.contains("status: next_action"), "expected status preserved, got:\n{}", raw);
+    }
+
+    #[test]
+    fn test_write_overrides_custom_status_when_complete() {
+        // If TC has flipped the task to Complete, the custom raw status must
+        // not survive — we want to write `done` so TaskNotes shows it done.
+        let content =
+            "---\ntitle: A task\nstatus: next_action\n---\n";
+        let f = write_temp_file(content);
+        let (mut task, extra) = parse_file(f.path(), &chrono_tz::UTC).unwrap().unwrap();
+        task.status = Status::Complete;
+        write_file(f.path(), &task, &extra).unwrap();
+        let raw = std::fs::read_to_string(f.path()).unwrap();
+        assert!(raw.contains("status: done"), "expected done, got:\n{}", raw);
+    }
+
+    #[test]
     fn test_parse_reviewed() {
         let content =
             "---\ntitle: Reviewed task\nstatus: todo\nreviewed: 2026-04-01\n---\n";
@@ -510,6 +549,7 @@ mod tests {
         let (task, _) = parse_file(f.path(), &chrono_tz::UTC).unwrap().unwrap();
         let extra = TaskNotesExtra {
             reviewed: Some(NaiveDate::parse_from_str("2026-04-15", "%Y-%m-%d").unwrap()),
+            raw_status: None,
         };
         write_file(f.path(), &task, &extra).unwrap();
         let (_, updated_extra) = parse_file(f.path(), &chrono_tz::UTC).unwrap().unwrap();
